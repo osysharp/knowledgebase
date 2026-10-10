@@ -1,0 +1,54 @@
+namespace KnowledgeKitTests;
+
+using Osysharp.KnowledgeBase;
+
+// Lumen's own pages: its site's header and footer around the kit's help centre (a design of the kit's
+// `HelpCentreFrame`), and the contact page the help centre's "Still need help?" goes to. The help centre's pages and the
+// desk's are the kit's own — at /help-centre and /knowledge — so a test reads exactly what an app gets.
+
+/// Lumen's site around every page of the help centre: its name, a way back to its home, a note a reader keeps while
+/// they read (it stays put as they move between pages, because the frame does), and a footer.
+component LumenHelpFrame() : HelpCentreFrame {
+  string note = "";
+  render {
+    Stack(gap: 0, w: "100%", minH: "100vh", bg: Colors.Bg) {
+      Row(gap: 4, px: 5, py: 3, align: Align.Center, justify: Justify.Between, bg: Colors.Surface, borderBW: 1,
+          border: Colors.Border, role: UiRole.Banner, label: "Lumen") {
+        Link(href: "/help-centre", label: "Lumen Docs", textDecoration: TextDecoration.None, color: Colors.OnSurface) {
+          Row(gap: 2, align: Align.Center) {
+            Box(w: "22px", h: "22px", rounded: Radius.Circle, bg: Colors.Primary) { }
+            Text("Lumen", fontWeight: FontWeight.Bold, fontSize: FontSize.Subhead);
+            Text("Docs", color: Colors.TextMuted, fontSize: FontSize.Subhead);
+          }
+        }
+        Row(gap: 3, align: Align.Center) {
+          Field("Note", value: note, placeholder: "Jot something down");
+          Link(href: "/contact", color: Colors.TextSecondary, fontSize: FontSize.Label) { Text("Contact"); }
+          ThemeToggle();
+        }
+      }
+      if (note != "") { Text("Your note: " + note, px: 5, color: Colors.TextMuted, fontSize: FontSize.Caption); }
+      Box(w: "100%", grow: 1) { Slot; }
+      Row(gap: 3, px: 5, py: 6, justify: Justify.Center, role: UiRole.ContentInfo, label: "Footer") {
+        Text("Lumen — a photo editor for people who print their photographs.", color: Colors.TextMuted, fontSize: FontSize.Caption);
+      }
+    }
+  }
+}
+
+/// Where "Still need help?" goes.
+[Route("/contact")]
+[AllowAnonymous]
+[Render(CSR)]
+[Title("Contact")]
+component ContactPage() {
+  string subject = "";
+  render {
+    HelpCentreFrame {
+      Stack(gap: 4, w: "100%", maxW: "640px", mx: "auto", px: 5, py: 8) {
+        PageHead("Ask the Lumen team", subtitle: "Tell us what you are trying to do — a person answers.");
+        KnowledgeSuggestingField("What is it about?", value: subject, placeholder: "One line — “Lumen will not open my RAW files”");
+      }
+    }
+  }
+}

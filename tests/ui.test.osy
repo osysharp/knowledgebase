@@ -1,0 +1,382 @@
+// THE HELP CENTRE AND THE DESK ON SCREEN — read as a photographer reads them and written as the team writes them: the
+// front page, a category, an article (and the same article in Swedish and in Arabic), a search, a search that finds
+// nothing, a team article asked for by a photographer, suggestions while typing, and the desk's list, editor, review
+// and categories — wide and on a phone, light and dark. `osy test --pixels` photographs each (`Ui.Shot`).
+using Osysharp.Identity;
+using Osysharp.KnowledgeBase;
+using KnowledgeKitTests;
+
+/// Lumen's documentation with something in it: two categories of public articles (one in Swedish and Arabic too), a
+/// team playbook, a draft in review and a draft being written.
+void Stocked() {
+  var raw = Published("installing", "Open RAW files from your camera",
+    "## Before you start\n\nLumen opens RAW files from most cameras made since 2012. If a file shows a grey square, your camera may be newer than your copy of Lumen.\n\n## Open a file\n\n1. Choose **File › Open**, or drag the files onto the window.\n2. Lumen reads the RAW data and shows a preview within a second or two.\n3. Edits are kept beside the file — the RAW itself is never changed.\n\n## If it does not open\n\n- Update Lumen: **Lumen › Check for updates**.\n- Check the file opens in your camera maker's own viewer.\n- Still stuck? Send us the file and we will look.\n\n```\nSupported: .CR3 .NEF .ARW .RAF .ORF .DNG\n```",
+    summary: "Which cameras Lumen reads, and what to do when a file shows a grey square.");
+  Translated(raw, "sv", "Öppna RAW-filer från kameran",
+    "## Innan du börjar\n\nLumen öppnar RAW-filer från de flesta kameror som gjorts sedan 2012. Visar en fil en grå ruta kan kameran vara nyare än din version av Lumen.\n\n## Öppna en fil\n\n1. Välj **Arkiv › Öppna**, eller dra filerna till fönstret.\n2. Lumen läser RAW-datan och visar en förhandsvisning inom ett par sekunder.\n3. Ändringar sparas bredvid filen — själva RAW-filen ändras aldrig.",
+    summary: "Vilka kameror Lumen läser, och vad du gör när en fil visar en grå ruta.");
+  Translated(raw, "ar", "افتح ملفات RAW من الكاميرا",
+    "## قبل أن تبدأ\n\nيفتح Lumen ملفات RAW من معظم الكاميرات المصنوعة منذ عام 2012. إذا ظهر الملف كمربع رمادي، فقد تكون الكاميرا أحدث من نسختك من Lumen.\n\n## افتح ملفًا\n\n1. اختر **ملف › فتح**، أو اسحب الملفات إلى النافذة.\n2. يقرأ Lumen بيانات RAW ويعرض معاينة خلال ثانية أو ثانيتين.\n3. تُحفظ التعديلات بجانب الملف — لا يتغير ملف RAW نفسه أبدًا.",
+    summary: "ما الكاميرات التي يقرأها Lumen، وماذا تفعل عندما يظهر الملف كمربع رمادي.");
+  Published("installing", "Install Lumen on a Mac", "Open the disk image and drag **Lumen** to *Applications*. The first time it opens, macOS asks whether to trust it — choose **Open**.",
+            summary: "From the download to the first photo.");
+  Published("installing", "Install Lumen on Windows", "Run the installer and follow its steps. Lumen needs Windows 10 or later and 8 GB of memory.",
+            summary: "What it needs, and the three steps of the installer.");
+  Published("your-account", "Move your licence to a new computer", "Sign out of Lumen on the old computer (**Lumen › Sign out**), then sign in on the new one. A licence is for two computers at a time.",
+            summary: "Two computers at a time — sign out on one to use another.");
+  Published("colour", "Fix a colour cast with white balance", "Pick the **dropper** above the temperature slider and click something that should be neutral grey — a wall, a shirt, a cloud.",
+            summary: "One click on something grey.");
+  Published("presets", "Make a preset from an edit", "When an edit looks right, choose **Edit › Save as preset**. It appears under *Presets* for every photo after.",
+            summary: "Save a look and use it on every photo after.");
+  Published("refunds", "Refund a licence bought in the last 30 days", "Refund it in the payments dashboard, then mail the customer the template *Refund done*. No questions asked within 30 days.",
+            summary: "No questions asked within 30 days.");
+  runas (Wren) {
+    var d = NewKnowledgeArticle(KnowledgeSection.Single(s => s.Slug == "presets"), "Share a preset with a friend");
+    d.Summary = "Export it as a file and send it.";
+    d.Body = "Right-click the preset and choose **Export**. Send the `.lumenpreset` file; your friend drags it onto Lumen.";
+    d.ChangeNote = "First version";
+    UnitOfWork.Commit();
+    SendKnowledgeForReview(d, "Is the right-click menu the same on Windows?");
+    var w = NewKnowledgeArticle(KnowledgeSection.Single(s => s.Slug == "colour"), "Print colours that match the screen");
+    w.Body = "Start with a calibrated screen.";
+    UnitOfWork.Commit();
+  }
+  Background.Settle();
+}
+
+/// The help centre's frame is its LAYOUT, so it stays on screen between pages: a note typed into Lumen's header on the
+/// front page is still there on a category and on an article. A frame drawn inside each page would be a new frame on
+/// every page, and the note would be gone.
+[Test(Lumen)]
+void the_frame_stays_on_screen_between_help_centre_pages() {
+  Stocked();
+  Ui.Viewport(1440, 900);
+  Ui.Visit("/help-centre");
+  Ui.Fill("Note", "grey squares on the R5");
+  Assert.Visible("Your note: grey squares on the R5");
+  Ui.Click("Getting started");
+  Assert.Visible("Install Lumen on a Mac");
+  Assert.Visible("Your note: grey squares on the R5");
+  Ui.Click("Open RAW files from your camera");
+  Assert.Visible("Before you start");
+  Assert.Visible("Your note: grey squares on the R5");
+  Ui.Shot("frame-kept-on-article");
+}
+
+[Test(Lumen)]
+void the_help_centre_front_page_offers_a_search_and_the_categories() {
+  Stocked();
+  Ui.Viewport(1440, 900);
+  Ui.Visit("/help-centre");
+  Assert.Visible("How can we help?");
+  Assert.Visible("Getting started", within: "Categories");
+  Assert.Visible("Editing photos", within: "Categories");
+  // The team's playbooks are not a photographer's.
+  Assert.Hidden("Support playbooks");
+  Assert.Visible("Still need help?");
+  Ui.Shot("front-wide-light");
+  Ui.Theme("dark");
+  Ui.Shot("front-wide-dark");
+  Ui.Theme("light");
+  Ui.Viewport(390, 844);
+  Ui.Shot("front-phone-light");
+}
+
+[Test(Lumen)]
+void an_empty_help_centre_says_so() {
+  Ui.Viewport(1440, 900);
+  Ui.Visit("/help-centre");
+  Assert.Visible("Nothing here yet");
+  Ui.Shot("front-empty-wide-light");
+}
+
+[Test(Lumen)]
+void a_category_lists_its_sections_and_their_articles() {
+  Stocked();
+  Ui.Viewport(1440, 900);
+  Ui.Visit("/help-centre/c/getting-started");
+  Assert.Visible("Installing");
+  Assert.Visible("Install Lumen on a Mac");
+  Assert.Visible("Your account");
+  Ui.Shot("category-wide-light");
+  Ui.Viewport(390, 844);
+  Ui.Theme("dark");
+  Ui.Shot("category-phone-dark");
+}
+
+[Test(Lumen)]
+void an_article_reads_in_the_readers_language() {
+  Stocked();
+  Ui.Viewport(1440, 900);
+  Ui.Visit("/help-centre/a/open-raw-files-from-your-camera");
+  Assert.Visible("Open RAW files from your camera");
+  Assert.Visible("Before you start");
+  Assert.Visible("More in Installing");
+  Ui.Shot("article-wide-light");
+  Ui.Theme("dark");
+  Ui.Shot("article-wide-dark");
+  Ui.Theme("light");
+  Ui.Viewport(390, 844);
+  Ui.Shot("article-phone-light");
+  // In Swedish: its Swedish version.
+  Ui.Viewport(1440, 900);
+  Ui.Visit("/sv/help-centre/a/open-raw-files-from-your-camera");
+  Assert.Visible("Öppna RAW-filer från kameran");
+  Ui.Shot("article-sv-wide-light");
+  // In Arabic: right to left, its Arabic version.
+  Ui.Visit("/ar/help-centre/a/open-raw-files-from-your-camera");
+  Assert.Visible("افتح ملفات RAW من الكاميرا");
+  Ui.Shot("article-ar-wide-light");
+  Ui.Viewport(390, 844);
+  Ui.Shot("article-ar-phone-light");
+  // An article with no Arabic version: the original, and the page says so.
+  Ui.Viewport(1440, 900);
+  Ui.Visit("/ar/help-centre/a/install-lumen-on-a-mac");
+  Assert.Visible("This article is not in your language yet");
+  Ui.Shot("article-fallback-ar-wide-light");
+}
+
+[Test(Lumen)]
+void a_team_article_is_not_here_for_a_photographer() {
+  Stocked();
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Pia);
+  Ui.Visit("/help-centre/a/refund-a-licence-bought-in-the-last-30-days");
+  Assert.Visible("We could not find that article");
+  Assert.Hidden("No questions asked");
+  Ui.Shot("article-team-refused-wide-light");
+  // The team reads it, marked as theirs.
+  Ui.SignInAs(Will);
+  Ui.Visit("/help-centre/a/refund-a-licence-bought-in-the-last-30-days");
+  Assert.Visible("Only the team reads this article");
+  Ui.Shot("article-team-for-the-team-wide-light");
+}
+
+[Test(Lumen)]
+void a_search_finds_articles_and_a_search_for_nothing_offers_a_person() {
+  Stocked();
+  Ui.Viewport(1440, 900);
+  Ui.Visit("/help-centre");
+  Ui.Fill("Search the help centre", "install windows");
+  Ui.Click("Search");
+  Assert.Visible("Install Lumen on Windows", within: "Results");
+  Assert.Hidden("Refund a licence");
+  Ui.Shot("search-wide-light");
+  Ui.Viewport(390, 844);
+  Ui.Shot("search-phone-light");
+  Ui.Viewport(1440, 900);
+  Ui.Visit("/help-centre/search/telescope-mount");
+  Assert.Visible("Nothing matched “telescope mount”");
+  Assert.Visible("Ask the Lumen team");
+  Ui.Shot("search-nothing-wide-light");
+  Ui.Theme("dark");
+  Ui.Shot("search-nothing-wide-dark");
+}
+
+[Test(Lumen)]
+void suggestions_appear_as_a_person_writes_and_open_over_the_form() {
+  Stocked();
+  Ui.Viewport(1440, 900);
+  Ui.Visit("/contact");
+  Ui.Fill("What is it about?", "my raw files show a grey square");
+  Assert.Visible("These articles might answer it");
+  Assert.Visible("Open RAW files from your camera");
+  Ui.Shot("suggestions-wide-light");
+  Ui.Click("Open RAW files from your camera");
+  Assert.Dialog("Open RAW files from your camera");
+  Ui.Shot("suggestion-open-wide-light");
+  Ui.Click("Back to your message");
+  Assert.Visible("These articles might answer it");
+  Ui.Viewport(390, 844);
+  Ui.Shot("suggestions-phone-light");
+}
+
+[Test(Lumen)]
+void the_desk_lists_every_article_and_how_each_language_stands() {
+  Stocked();
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Eda);
+  Ui.Visit("/knowledge");
+  Assert.Visible("Open RAW files from your camera", within: "Articles");
+  Assert.Visible("SV · Published");
+  Assert.Visible("1 version is waiting for a review");
+  Ui.Shot("desk-list-wide-light");
+  Ui.Click("Drafts");
+  Assert.Visible("Print colours that match the screen", within: "Articles");
+  Assert.Hidden("Install Lumen on a Mac");
+  Ui.Theme("dark");
+  Ui.Shot("desk-drafts-wide-dark");
+  Ui.Theme("light");
+  Ui.Viewport(390, 844);
+  Ui.Click("All");
+  Ui.Shot("desk-list-phone-light");
+}
+
+/// A knowledge base of hundreds of articles opens on the newest fifty: the list reads a window, and "Show more" reads
+/// the next. Searching and the lists still look across all of them, not just the window on screen.
+[Test(Lumen)]
+void the_desk_shows_the_newest_articles_first_and_the_rest_on_request() {
+  TestClock.Set(new DateTime(2030, 3, 2, 9, 0, 0));
+  runas (Wren) {
+    var presets = KnowledgeSection.Single(s => s.Slug == "presets");
+    for (var i = 1; i <= 52; i++) {
+      TestClock.Advance(TimeSpan.FromMinutes(1));
+      NewKnowledgeArticle(presets, "Shortcut " + (i < 10 ? "0" : "") + i + " for faster editing");
+      UnitOfWork.Commit();
+    }
+  }
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Eda);
+  Ui.Visit("/knowledge");
+  Assert.Visible("Shortcut 52 for faster editing", within: "Articles");
+  Assert.Visible("Shortcut 03 for faster editing", within: "Articles");
+  Assert.Hidden("Shortcut 02 for faster editing");
+  Assert.Hidden("Shortcut 01 for faster editing");
+  // A search looks past the window.
+  Ui.Fill("Find an article", "shortcut 01");
+  Assert.Visible("Shortcut 01 for faster editing", within: "Articles");
+  Ui.Fill("Find an article", "");
+  Ui.Click("Show more");
+  Assert.Visible("Shortcut 01 for faster editing", within: "Articles");
+  Assert.Hidden("Show more");
+  Ui.Shot("desk-list-more-wide-light");
+}
+
+[Test(Lumen)]
+void a_writer_starts_an_article_writes_it_and_sends_it_for_review() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Wren);
+  Ui.Visit("/knowledge");
+  Assert.Visible("No articles yet");
+  Ui.Shot("desk-empty-wide-light");
+  Ui.Click("New article");
+  Ui.Fill("Title", "Crop to a print size");
+  Ui.Click("Where it goes");
+  Ui.Click("Editing photos › Presets");
+  Ui.Shot("desk-new-article-wide-light");
+  Ui.Click("Start writing");
+  Assert.Visible("Version 1 · yours");
+  Ui.Fill("One line about it", "Pick 10×15 or A4 and the crop keeps the shape.");
+  Ui.Click("Save");
+  Assert.Visible("Saved");
+  // An empty article is not sent — the refusal says why, on the draft.
+  Ui.Click("Send for review");
+  Background.Settle();
+  Assert.Visible("Write something first — the article is empty.");
+  Ui.Shot("desk-editor-refused-wide-light");
+  // Its words (the editor saves them as they are written).
+  runas (Wren) {
+    var d = KnowledgeRevision.Single(r => r.Title == "Crop to a print size");
+    d.Body = "## Pick a size\n\nChoose **Crop** and pick *10×15* or *A4* — the frame keeps that shape as you drag it.\n\n## Turn it\n\nPress **X** to swap portrait and landscape.";
+    UnitOfWork.Commit();
+  }
+  Ui.Visit("/knowledge");
+  Ui.Click("Crop to a print size");
+  Assert.Visible("Pick a size");
+  Ui.Shot("desk-editor-wide-light");
+  Ui.Theme("dark");
+  Ui.Shot("desk-editor-wide-dark");
+  Ui.Theme("light");
+  Ui.Click("Send for review");
+  Background.Settle();
+  Assert.Visible("In review");
+  Assert.Visible("Take it back to change it");
+  // A version in review is read-only, so its editor offers no Save — there is nothing a writer could change.
+  Assert.Visible("Density", within: "Article text");
+  Assert.Hidden("Save", within: "Article text");
+  Ui.Shot("desk-sent-wide-light");
+}
+
+[Test(Lumen)]
+void a_reviewer_reads_the_queue_and_sends_a_version_back_or_publishes_it() {
+  Stocked();
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Eda);
+  Ui.Visit("/knowledge/review");
+  Assert.Visible("Share a preset with a friend", within: "Versions waiting");
+  Ui.Shot("review-queue-wide-light");
+  Ui.Click("Share a preset with a friend");
+  Assert.Visible("In review");
+  Assert.Visible("Is the right-click menu the same on Windows?");
+  Ui.Fill("What to change (to send it back)", "Yes — but say so, and show where Export is on a Mac too.");
+  Ui.Shot("review-article-wide-light");
+  Ui.Click("Send back");
+  Background.Settle();
+  Assert.Visible("Draft");
+  // Wren reads why, on her draft.
+  Ui.SignInAs(Wren);
+  Ui.Visit("/knowledge");
+  Ui.Click("Share a preset with a friend");
+  Assert.Visible("Sent back by Eda Lind");
+  Ui.Shot("review-sent-back-wide-light");
+  Ui.Viewport(390, 844);
+  Ui.Shot("review-sent-back-phone-light");
+}
+
+[Test(Lumen)]
+void a_reviewer_publishes_and_readers_read_it() {
+  Stocked();
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Eda);
+  Ui.Visit("/knowledge/review");
+  Ui.Click("Share a preset with a friend");
+  Ui.Click("Publish");
+  Background.Settle();
+  Assert.Visible("Published");
+  Assert.Visible("Edit — start version 2");
+  Ui.Shot("desk-published-wide-light");
+  Ui.Visit("/help-centre/a/share-a-preset-with-a-friend");
+  Assert.Visible("Export it as a file and send it.");
+}
+
+[Test(Lumen)]
+void a_language_not_written_yet_starts_from_the_original() {
+  Stocked();
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Wren);
+  Ui.Visit("/knowledge");
+  Ui.Click("Install Lumen on a Mac");
+  Ui.Click("SV · not written");
+  Assert.Visible("Not written in SV yet");
+  Ui.Shot("desk-language-missing-wide-light");
+  Ui.Click("Start the SV version");
+  Assert.Visible("Version 1 · yours");
+  Ui.Shot("desk-language-draft-wide-light");
+}
+
+[Test(Lumen)]
+void the_owner_arranges_categories_and_sections() {
+  Stocked();
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Owen);
+  Ui.Visit("/knowledge/categories");
+  Assert.Visible("Support playbooks");
+  Ui.Fill("Name", "Printing", within: "Add a category");
+  Ui.Click("Add the category");
+  Assert.Visible("Printing");
+  Ui.Shot("categories-wide-light");
+  // A writer may not.
+  Ui.SignInAs(Wren);
+  Ui.Visit("/knowledge/categories");
+  Assert.Hidden("Add the category");
+}
+
+[Test(Lumen)]
+void the_owner_keeps_the_settings() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Owen);
+  Ui.Visit("/settings/knowledge");
+  Assert.Visible("Review before publishing");
+  Ui.Shot("settings-wide-light");
+  Ui.Click("Review before publishing");
+  Ui.Click("Save");
+  Assert.Visible("Knowledge base settings saved.");
+  runas (Owen) { Assert.False(KnowledgeSettings.Single().RequireReview); }
+}
+
+[Test(Lumen)]
+void the_doors_into_lumen_let_in_the_right_person() {
+  Assert.NotEqual("", SignInWithCode("pia@photos.test", "1234"));
+  Assert.Equal("", SignInWithCode("pia@photos.test", "4321"));
+  Assert.Equal("", SignInWithCode("nobody@photos.test", "1234"));
+}

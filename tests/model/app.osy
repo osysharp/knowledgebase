@@ -1,0 +1,70 @@
+namespace KnowledgeKitTests;
+
+using Osysharp.Identity;
+using Osysharp.KnowledgeBase;
+
+// LUMEN'S DOCUMENTATION — a photo editor's help centre. Readers are photographers: anybody reads the public articles,
+// and a photographer with an account reads the ones for account holders too. Writers write; editors review and
+// publish; the owner arranges the categories and keeps the settings. One category, "Support playbooks", is the team's
+// own — the case a reader's search must never find.
+
+[Role] enum DocsRole { Authenticator, Photographer, Writer, Editor, Owner }
+
+policy IsWriter => RoleGrant.Any(g => g.Member == user && (g.Role == DocsRole.Writer || g.Role == DocsRole.Editor || g.Role == DocsRole.Owner));
+policy IsEditor => RoleGrant.Any(g => g.Member == user && (g.Role == DocsRole.Editor || g.Role == DocsRole.Owner));
+policy IsOwner => RoleGrant.Any(g => g.Member == user && g.Role == DocsRole.Owner);
+
+/// The kit's four questions, answered once.
+policy ReadsTeamKnowledge => IsWriter;
+policy WritesKnowledge => IsWriter;
+policy ReviewsKnowledge => IsEditor;
+policy ManagesKnowledge => IsOwner;
+
+/// Somebody who signs in — a photographer or one of the team — with a code, all a test needs.
+entity Person : Principal {
+  [MaxLength(200)] string CodeHash = "";
+  security {
+    allow read when IsAuthenticated || IsAuthenticator;
+    allow create when IsAuthenticator;
+    deny read CodeHash when !IsAuthenticator;
+  }
+}
+
+app.Knowledge = new KnowledgeSetup { Name = "Lumen Docs", ContactPath = "/contact", ContactLabel = "Ask the Lumen team" };
+
+// What the docs team hears as articles move — the app's own record, so a test can read that the kit raised it.
+[On] void NoteReview(ArticleSentForReview e) { new DocsNote { Says = "review: " + e.Revision.Article.Slug }; }
+[On] void NotePublished(ArticlePublished e) {
+  new DocsNote { Says = "published: " + e.Revision.Article.Slug + " " + e.Revision.Language + " v" + e.Revision.Number };
+}
+[On] void NoteSentBack(ArticleSentBack e) {
+  new DocsNote { Says = "sent back: " + e.Revision.Article.Slug + " — " + (e.Step.Note ?? "") };
+}
+[On] void NoteArchived(ArticleArchived e) { new DocsNote { Says = "archived: " + e.Article.Slug }; }
+[On] void NoteRestored(ArticleRestored e) { new DocsNote { Says = "restored: " + e.Article.Slug }; }
+
+/// What the docs team was told.
+entity DocsNote {
+  [CreatedAt] DateTime? CreatedAt;
+  [Required, MaxLength(200)] string Says;
+  security { allow read when IsOwner; }
+}
+
+[AuthMethod]
+string SignInWithCode(string email, string code) {
+  var p = Person.FirstOrDefault(x => x.Email == NormalisedEmail(email));
+  if (p == null || !p.IsActive) { Security.VerifyPassword(code); return ""; }
+  if (!Security.VerifyPassword(code, p.CodeHash)) { return ""; }
+  return Security.IssueJwt(p.Id, p.Email);
+}
+
+app.AuthBootstrap = new AuthBootstrap { Role = DocsRole.Authenticator, Login = SignInWithCode };
+app.Auth = new PasswordAuth { LoginField = Email, PasswordField = CodeHash };
+app.Audit = new AuditConfig { Redact = new AuditRedaction { Properties = [KnowledgeKitTests.Person.CodeHash] } };
+
+// The docs speak English, Swedish and Arabic.
+app.DefaultCulture = "en-GB";
+
+// Who wrote and reviewed an article, and what a reviewer wrote back — read by whoever may read the row.
+app = new() { Classifications = [ new Classification(Personal.Identity) { Open = true },
+                                  new Classification(Personal.Content) { Open = true } ] };

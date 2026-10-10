@@ -1,0 +1,199 @@
+namespace Osysharp.KnowledgeBase;
+
+using Osysharp.Identity;
+using Osysharp.Markdown;
+
+// ── what the team's desk reads ────────────────────────────────────────────────────────────────────────────────────────
+//
+// The writers' and reviewers' view: every article in every stage, by language. The desk's pages read these as LIVE
+// projections (so a step applied after its commit shows the moment it is), under the reader's own rules — a person who
+// neither writes nor reviews reads nothing here. The pure functions below turn them into what the pages show.
+
+/// An article, as the desk reads it.
+public class KnowledgeArticleHead {
+  public Guid Id = Guid.Empty;
+  public string Slug = "";
+  public string Language = "";
+  public KnowledgeAudience Audience = KnowledgeAudience.Everyone;
+  public bool CategoryTeamOnly;
+  public Guid Section = Guid.Empty;
+  public string SectionName = "";
+  public string CategoryName = "";
+  public bool Archived;
+  public bool EverPublished;
+}
+
+/// One version of an article, as the desk reads it — everything but its words, which the editor reads by itself.
+public class KnowledgeVersionHead {
+  public Guid Id = Guid.Empty;
+  public Guid Article = Guid.Empty;
+  public string Language = "";
+  public int Number;
+  public KnowledgeStage Stage = KnowledgeStage.Draft;
+  public string Title = "";
+  public string Summary = "";
+  public string ChangeNote = "";
+  public Guid Author = Guid.Empty;
+  public string AuthorName = "";
+  public DateTime Created;
+  public DateTime? SubmittedAt;
+  public DateTime? PublishedAt;
+  public string PublishedBy = "";
+}
+
+/// One step somebody took, as the review trail shows it.
+public class KnowledgeStepHead {
+  public Guid Id = Guid.Empty;
+  public KnowledgeStepKind Kind = KnowledgeStepKind.Submit;
+  public KnowledgeStepState State = KnowledgeStepState.Waiting;
+  public string By = "";
+  public DateTime At;
+  public string Note = "";
+  public string Language = "";
+  public int Version;
+  public string Problem = "";
+}
+
+/// Where one language of an article stands.
+public class KnowledgeLanguageState {
+  public string Language = "";
+  /// It has a published version in this language, numbered so.
+  public bool Published;
+  public int PublishedNumber;
+  /// A draft is being written in it.
+  public bool Draft;
+  /// A version is waiting for a reviewer.
+  public bool InReview;
+}
+
+/// Where each of `languages` stands for an article, from its versions.
+public List<KnowledgeLanguageState> KnowledgeLanguagesOf(List<KnowledgeVersionHead> versions, List<string> languages) {
+  List<KnowledgeLanguageState> states = [];
+  foreach (var l in languages) {
+    var inIt = versions.Where(v => v.Language == l).ToList();
+    var live = inIt.FirstOrDefault(v => v.Stage == KnowledgeStage.Published);
+    states.Add(new KnowledgeLanguageState { Language = l, Published = live != null, PublishedNumber = live == null ? 0 : live.Number,
+                                            Draft = inIt.Any(v => v.Stage == KnowledgeStage.Draft),
+                                            InReview = inIt.Any(v => v.Stage == KnowledgeStage.InReview) });
+  }
+  return states;
+}
+
+/// What the desk's list shows of one article: its title (its original's newest version), and how its languages stand.
+public KnowledgeVersionHead? KnowledgeShownVersion(KnowledgeArticleHead article, List<KnowledgeVersionHead> versions) {
+  var mine = versions.Where(v => v.Article == article.Id).ToList();
+  return mine.Where(v => v.Language == article.Language).OrderByDescending(v => v.Number).FirstOrDefault()
+      ?? mine.OrderByDescending(v => v.Number).FirstOrDefault();
+}
+
+/// When something last happened to the article — a version written, sent or published.
+public DateTime KnowledgeLastTouched(Guid article, List<KnowledgeVersionHead> versions) {
+  var last = DateTime.MinValue;
+  foreach (var v in versions.Where(v => v.Article == article).ToList()) {
+    var at = v.PublishedAt ?? v.SubmittedAt ?? v.Created;
+    if (at > last) { last = at; }
+  }
+  return last;
+}
+
+/// Which of the desk's lists an article is in.
+public enum KnowledgeDeskList {
+  [Label("All")] All,
+  [Label("Drafts")] Drafts,
+  [Label("In review")] InReview,
+  [Label("Published")] Published,
+  [Label("Archived")] Archived,
+}
+
+/// How many articles the desk's list reads at a time; "Show more" reads the next window.
+public int KnowledgeDeskWindow() { return 50; }
+
+/// Is `article` in the desk's list `list`?
+public bool KnowledgeInList(KnowledgeArticleHead article, List<KnowledgeVersionHead> versions, KnowledgeDeskList list) {
+  if (list == KnowledgeDeskList.All) { return true; }
+  if (list == KnowledgeDeskList.Archived) { return article.Archived; }
+  var mine = versions.Where(v => v.Article == article.Id).ToList();
+  if (list == KnowledgeDeskList.Drafts) { return mine.Any(v => v.Stage == KnowledgeStage.Draft); }
+  if (list == KnowledgeDeskList.InReview) { return mine.Any(v => v.Stage == KnowledgeStage.InReview); }
+  return !article.Archived && mine.Any(v => v.Stage == KnowledgeStage.Published);
+}
+
+// ── what the desk does: save, place, start, step ──────────────────────────────────────────────────────────────────────
+
+/// Save a draft's title, line and change note — its words are saved by the editor as they are written.
+public void SaveKnowledgeDraft(Guid draft, string title, string summary, string changeNote) {
+  var v = KnowledgeRevision.FirstOrDefault(r => r.Id == draft);
+  if (v == null) { throw new ValidationException("That draft is gone — it was published, sent or thrown away."); }
+  if (v.Stage != KnowledgeStage.Draft) { throw new ValidationException("It is " + v.Stage.Label.ToLower() + " — take it back to change it."); }
+  var heading = title.Trim();
+  if (heading == "") { throw new ValidationException("Give it a title — readers find it by it."); }
+  if (heading.Length > 200) { throw new ValidationException("Keep the title under 200 characters."); }
+  if (summary.Trim().Length > 400) { throw new ValidationException("Keep the line under 400 characters."); }
+  if (changeNote.Trim().Length > 300) { throw new ValidationException("Keep the note under 300 characters."); }
+  v.Title = heading;
+  v.Summary = summary.Trim();
+  v.ChangeNote = changeNote.Trim();
+  UnitOfWork.Commit();
+}
+
+/// Move an article to another section, or change who reads it.
+public void PlaceKnowledgeArticle(Guid article, Guid section, KnowledgeAudience audience) {
+  var a = KnowledgeArticle.FirstOrDefault(x => x.Id == article);
+  var s = KnowledgeSection.FirstOrDefault(x => x.Id == section);
+  if (a == null || s == null) { throw new ValidationException("That article or section is gone."); }
+  a.Section = s;
+  a.Audience = audience;
+  UnitOfWork.Commit();
+}
+
+/// A section, as a picker lists it — "Getting started › Installing".
+public class KnowledgeSectionChoice {
+  public Guid Id = Guid.Empty;
+  public string Label = "";
+  public bool TeamOnly;
+}
+
+/// Start an article from the desk — answers its desk address, to open it.
+public string StartKnowledgeArticle(Guid section, string title, bool teamOnly) {
+  var s = KnowledgeSection.FirstOrDefault(x => x.Id == section);
+  if (s == null) { throw new ValidationException("Choose where it goes — a category's section."); }
+  var draft = NewKnowledgeArticle(s, title, audience: teamOnly ? KnowledgeAudience.Team : KnowledgeAudience.Everyone);
+  return KnowledgeDeskPath("a/" + draft.Article.Id.ToString());
+}
+
+/// The draft in `language` of `article` — the one being written, or a new one — for the desk's "Start" and "Edit".
+public void OpenKnowledgeDraft(Guid article, string language) {
+  var a = KnowledgeArticle.FirstOrDefault(x => x.Id == article);
+  if (a == null) { throw new ValidationException("That article is gone."); }
+  KnowledgeDraft(a, language);
+}
+
+/// Start a new draft from the earlier version `version`.
+public void RestoreKnowledgeVersion(Guid version) {
+  var v = KnowledgeRevision.FirstOrDefault(x => x.Id == version);
+  if (v == null) { throw new ValidationException("That version is gone."); }
+  KnowledgeDraftFrom(v);
+}
+
+/// Take a step from the desk, on the version `version` of an article (or on the article, for archive and restore).
+public void KnowledgeDeskStep(Guid article, Guid version, KnowledgeStepKind kind, string note = "") {
+  var a = KnowledgeArticle.FirstOrDefault(x => x.Id == article);
+  if (a == null) { throw new ValidationException("That article is gone."); }
+  if (kind == KnowledgeStepKind.Archive) { ArchiveKnowledge(a, note); return; }
+  if (kind == KnowledgeStepKind.Restore) { RestoreKnowledge(a); return; }
+  var v = KnowledgeRevision.FirstOrDefault(x => x.Id == version);
+  if (v == null) { throw new ValidationException("That version is gone."); }
+  if (kind == KnowledgeStepKind.Submit) { SendKnowledgeForReview(v, note); return; }
+  if (kind == KnowledgeStepKind.TakeBack) { TakeKnowledgeBack(v); return; }
+  if (kind == KnowledgeStepKind.Publish) { PublishKnowledge(v, note); return; }
+  SendKnowledgeBack(v, note);
+}
+
+/// Throw away the draft `version` — answers where to go next: the article, or the desk when the article went with it.
+public string DiscardKnowledgeVersion(Guid version) {
+  var v = KnowledgeRevision.FirstOrDefault(x => x.Id == version);
+  if (v == null) { throw new ValidationException("That draft is gone."); }
+  var article = v.Article.Id;
+  DiscardKnowledgeDraft(v);
+  return KnowledgeArticle.Any(a => a.Id == article) ? "" : KnowledgeDeskPath();
+}

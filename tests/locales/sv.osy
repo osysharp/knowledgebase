@@ -1,0 +1,5 @@
+// sv (Svenska): the docs speak Swedish too — an article has a Swedish version of its own. The kit's words are
+// translated where a test reads them; every other text falls back to the source.
+
+translations sv {
+}

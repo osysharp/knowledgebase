@@ -1,0 +1,64 @@
+// Who reads what: an article for the team — or in the team's own category — never reaches anybody outside it, by any
+// read: its page, a category, the front page's lists, a search, a suggestion, or a query of the app's own.
+using Osysharp.Identity;
+using Osysharp.KnowledgeBase;
+using KnowledgeKitTests;
+
+// SECURITY-INVARIANT(knowledge-team-articles-never-reach-a-customer)
+[Test(Lumen)]
+void a_team_article_is_never_read_by_a_customer_or_found_by_their_search() {
+  Published("your-account", "Change your email address", "Open Account and choose Change email.");
+  var inner = Published("your-account", "Move a licence between accounts", "Ask Owen first. Refund rules apply to licences.",
+                        audience: KnowledgeAudience.Team);
+  var playbook = Published("refunds", "Refund a licence", "Refund within 30 days, no questions asked about licences.");
+  // A photographer — and anybody signed out — reads neither, finds neither, and is suggested neither.
+  runas (Pia) {
+    Assert.False(KnowledgeArticleView(inner).Found);
+    Assert.False(KnowledgeArticleView(playbook).Found);
+    Assert.Equal(0, SearchKnowledge("licence").Hits.Count);
+    Assert.Equal(0, SearchKnowledge("licence", includeTeam: true).Hits.Count);
+    Assert.Equal(0, SuggestKnowledge("how do I get a refund for my licence").Count);
+    Assert.Equal(["getting-started"], KnowledgeShelves(includeTeam: true).Select(s => s.Slug).ToList());
+    Assert.Null(KnowledgeShelf("support-playbooks", includeTeam: true));
+    Assert.Equal(0, KnowledgeArticle.Count(a => a.Slug == inner || a.Slug == playbook));
+    Assert.Equal(1, KnowledgeRevision.Count());
+    Assert.Equal(0, KnowledgeCategory.Count(c => c.Slug == "support-playbooks"));
+  }
+  Assert.False(KnowledgeArticleView(inner).Found);
+  Assert.Equal(0, SearchKnowledge("licence").Hits.Count);
+  // The team reads both, marked as theirs — and a search for the help centre still leaves them out.
+  runas (Will) {
+    var view = KnowledgeArticleView(inner);
+    Assert.True(view.Found);
+    Assert.True(view.TeamOnly);
+    Assert.True(KnowledgeArticleView(playbook).TeamOnly);
+    Assert.Equal(2, SearchKnowledge("licence", includeTeam: true).Hits.Count);
+    Assert.Equal(0, SearchKnowledge("licence").Hits.Count);
+    Assert.Equal(0, SuggestKnowledge("refund my licence").Count);
+    Assert.Equal(["getting-started", "support-playbooks"], KnowledgeShelves(includeTeam: true).Select(s => s.Slug).ToList());
+  }
+}
+
+[Test(Lumen)]
+void a_category_with_nothing_published_is_not_on_the_front_page() {
+  Published("installing", "Install Lumen on a Mac", "Drag it to Applications.");
+  runas (Pia) {
+    var shelves = KnowledgeShelves();
+    Assert.Equal(["getting-started"], shelves.Select(s => s.Slug).ToList());
+    Assert.Equal(1, shelves[0].Count);
+    // …and an empty section is not on its category's page either; nor is an empty category's page anything.
+    Assert.Equal(["installing"], KnowledgeShelf("getting-started")!.Sections.Select(s => s.Slug).ToList());
+    Assert.Null(KnowledgeShelf("editing-photos"));
+  }
+}
+
+[Test(Lumen)]
+void the_sitemap_lists_only_what_everyone_may_read() {
+  var open = Published("installing", "Install Lumen on a Mac", "Drag it to Applications.");
+  var inner = Published("installing", "Licence keys for the press", "Owen hands them out.", audience: KnowledgeAudience.Team);
+  var xml = KnowledgeSitemap();
+  Assert.Contains("/help-centre/a/" + open + "<", xml);
+  Assert.Contains("/help-centre/c/getting-started<", xml);
+  Assert.DoesNotContain(inner, xml);
+  Assert.DoesNotContain("support-playbooks", xml);
+}

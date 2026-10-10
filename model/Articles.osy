@@ -1,0 +1,353 @@
+namespace Osysharp.KnowledgeBase;
+
+using Osysharp.Identity;
+using Osysharp.Markdown;
+using Osysharp.Memory;
+using Osysharp.Stemming;
+using Osysharp.Workflow;
+
+// ── who an article is for ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Who may read a category's or an article's published words. An article is for everyone only when its category is.
+/// ⚠ Appended, never inserted: an enum is stored by position.
+public enum KnowledgeAudience {
+  /// Anybody — signed in or not, and every search engine.
+  [Label("Everyone")] Everyone,
+  /// Only the team (`ReadsTeamKnowledge`) — never a customer, never the public help centre, never a customer's search.
+  [Label("The team only")] Team,
+}
+
+/// Where one version of an article stands. ⚠ Appended, never inserted.
+public enum KnowledgeStage {
+  /// Being written — the only stage whose words can change.
+  [Label("Draft")] Draft,
+  /// Sent for review: waiting for a reviewer to publish it or send it back.
+  [Label("In review")] InReview,
+  /// What readers of its language read now. One per article and language.
+  [Label("Published")] Published,
+  /// Published once, and replaced by a later version.
+  [Label("Earlier version")] Superseded,
+}
+
+// ── the help centre's shelves ─────────────────────────────────────────────────────────────────────────────────────────
+
+/// A CATEGORY — the first thing a reader picks on the help centre's front page ("Getting started", "Billing").
+public entity KnowledgeCategory {
+  [Required, MaxLength(120), Translatable] string Name;
+  /// A sentence under its name.
+  [MaxLength(400), Translatable] string Description = "";
+  /// Its address — /help-centre/c/<slug>. Kept when its name changes, so a link to it keeps working.
+  [Required, Unique, MaxLength(80), Pattern("^[a-z0-9]+(-[a-z0-9]+)*$")] string Slug;
+  /// Its place on the front page, smallest first.
+  int Position;
+  /// Who reads it — a category for the team only keeps every article in it from customers.
+  KnowledgeAudience Audience = KnowledgeAudience.Everyone;
+  [ForeignKey(Category)] KnowledgeSection[] Sections;
+
+  security {
+    // Everyone reads a category for everyone, and the team every one — a rule per kind of caller, so the team never
+    // asks about a category's audience.
+    allow read where Audience == KnowledgeAudience.Everyone;
+    allow read when ReadsTeamKnowledge || WritesKnowledge || ReviewsKnowledge || ManagesKnowledge;
+    allow create, update, delete when ManagesKnowledge;
+  }
+}
+
+/// A SECTION of a category — a short list of articles under one heading ("Signing in", "Invoices and receipts").
+public entity KnowledgeSection {
+  [Required] KnowledgeCategory Category;
+  [Required, MaxLength(120), Translatable] string Name;
+  [MaxLength(400), Translatable] string Description = "";
+  [Required, Unique, MaxLength(80), Pattern("^[a-z0-9]+(-[a-z0-9]+)*$")] string Slug;
+  int Position;
+  [ForeignKey(Section)] KnowledgeArticle[] Articles;
+
+  security {
+    allow read where Category.Audience == KnowledgeAudience.Everyone;
+    allow read when ReadsTeamKnowledge || WritesKnowledge || ReviewsKnowledge || ManagesKnowledge;
+    allow create, update, delete when ManagesKnowledge;
+  }
+}
+
+// ── an article, and its versions ──────────────────────────────────────────────────────────────────────────────────────
+
+/// An ARTICLE — one answer, in every language it is written in. What it SAYS is in its versions
+/// (`KnowledgeRevision`): numbered, one draft at a time per language, and one published per language.
+///
+/// SECURITY-INVARIANT(knowledge-team-articles-never-reach-a-customer): an article — and every version of it — is read
+/// by a person outside the team only while it is published, not archived, and both its audience and its category's
+/// are Everyone. Guarded by tests/audience.test.osy
+/// `a_team_article_is_never_read_by_a_customer_or_found_by_their_search`.
+public entity KnowledgeArticle {
+  [Required] KnowledgeSection Section;
+  /// Its address — /help-centre/a/<slug> — the same in every language, so a shared link works for every reader.
+  [Required, Unique, MaxLength(120), Pattern("^[a-z0-9]+(-[a-z0-9]+)*$")] string Slug;
+  KnowledgeAudience Audience = KnowledgeAudience.Everyone;
+  /// Its place in its section, smallest first.
+  int Position;
+  /// The language it was first written in — what a reader whose own language has no version reads.
+  [Required, MaxLength(20)] string Language;
+  /// Who started it.
+  [Classification(Personal.Identity)] Principal? Author;
+  /// When a version of it was first published — readers outside the team never read an article before.
+  DateTime? FirstPublishedAt;
+  /// Archived: no reader outside the writers and reviewers reads it, and it is in no search. Its versions are kept.
+  DateTime? ArchivedAt;
+  [ForeignKey(Article)] KnowledgeRevision[] Revisions;
+
+  security {
+    // A published, unarchived article whose audience (and its category's) is everyone's; for the team every published
+    // one; for writers and reviewers every one. A rule per kind of caller.
+    allow read where FirstPublishedAt != null && ArchivedAt == null
+                  && Audience == KnowledgeAudience.Everyone && Section.Category.Audience == KnowledgeAudience.Everyone;
+    allow read when ReadsTeamKnowledge where FirstPublishedAt != null && ArchivedAt == null;
+    allow read when WritesKnowledge || ReviewsKnowledge || ManagesKnowledge;
+    allow create, update when WritesKnowledge || ReviewsKnowledge;
+    // Published and archived are the steps' to set (`KnowledgeStep`), never an edit's.
+    deny create where FirstPublishedAt != null || ArchivedAt != null;
+    deny update FirstPublishedAt, ArchivedAt, Language, Author;
+    // An article that was never published may be thrown away; one that was is archived instead.
+    allow delete when WritesKnowledge || ReviewsKnowledge where FirstPublishedAt == null;
+  }
+}
+
+/// ONE VERSION of an article in one language — its title, a line about it, and its words.
+///
+/// A draft is the only version whose words change. Sending it for review, publishing it and sending it back are steps
+/// (`KnowledgeStep`); publishing makes it what readers of its language read, and the version it replaces becomes an
+/// earlier version, kept and readable by the team.
+///
+/// SECURITY-INVARIANT(knowledge-published-only-by-a-reviewer-step): `Stage` changes only by an applied step — a
+/// version is published only by a reviewer's step, never by an edit, and while review is on, never by the person who
+/// wrote it. Guarded by tests/review.test.osy `a_draft_is_never_published_by_an_edit` and
+/// `while_review_is_on_nobody_publishes_their_own_words`.
+[Title(Title)]
+public entity KnowledgeRevision {
+  [CreatedAt] DateTime? CreatedAt;
+  [Required] KnowledgeArticle Article;
+  /// Its language — BCP-47, one the app speaks ("en", "sv").
+  [Required, MaxLength(20)] string Language;
+  /// Its number among the article's versions in this language: 1, 2, 3…
+  int Number;
+  [Required, MaxLength(200)] string Title;
+  /// One line about it — under its title, in a search result and as a search engine's snippet.
+  [MaxLength(400)] string Summary = "";
+  Markdown Body;
+  /// What changed, in the writer's words — the version's line in the history.
+  [MaxLength(300)] string ChangeNote = "";
+  KnowledgeStage Stage = KnowledgeStage.Draft;
+  /// The version it was started from — its language's last published one, or the original it translates.
+  KnowledgeRevision? From;
+  /// Who wrote it.
+  [Classification(Personal.Identity)] Principal? Author;
+  DateTime? SubmittedAt;
+  DateTime? PublishedAt;
+  /// Who published it.
+  [Classification(Personal.Identity)] Principal? PublishedBy;
+  DateTime? SupersededAt;
+  /// Its words as plain text, written when it is published — what a search matches and ranks.
+  [Searchable(Entity), MaxLength(200000)] string SearchText = "";
+  /// The same words in their base forms, in its own language (`Osysharp.Stemming`) — what lets a search for
+  /// "betalningen" find a version that says "betalningar". Written with `SearchText`.
+  [Searchable(Entity), MaxLength(200000)] string SearchStems = "";
+  /// Its words while it is the published version of an article that is not archived — indexed by MEANING (the app's
+  /// embedder), so a search finds what an article is about whatever words it uses. Cleared when it is superseded or its
+  /// article archived: only what a reader may be shown is ever in that index.
+  [Searchable(Memory), MaxLength(200000)] string? MeaningText;
+
+  security {
+    // The published version of an article the reader may read (see KnowledgeArticle); every version for writers and
+    // reviewers. A rule per kind of caller.
+    allow read where Stage == KnowledgeStage.Published && Article.ArchivedAt == null
+                  && Article.Audience == KnowledgeAudience.Everyone
+                  && Article.Section.Category.Audience == KnowledgeAudience.Everyone;
+    allow read when ReadsTeamKnowledge where Stage == KnowledgeStage.Published && Article.ArchivedAt == null;
+    allow read when WritesKnowledge || ReviewsKnowledge || ManagesKnowledge;
+    allow create when WritesKnowledge || ReviewsKnowledge;
+    // Only a draft's words change — a version in review or published is what it was when it was sent.
+    allow update when WritesKnowledge || ReviewsKnowledge where Stage == KnowledgeStage.Draft;
+    deny create where Stage != KnowledgeStage.Draft || PublishedAt != null || SubmittedAt != null || SearchText != ""
+      || SearchStems != "" || MeaningText != null;
+    deny update Stage, Article, Language, Number, Author, SubmittedAt, PublishedAt, PublishedBy, SupersededAt, SearchText,
+      SearchStems, MeaningText;
+    // A draft may be thrown away; a version that was ever sent is history.
+    allow delete when WritesKnowledge || ReviewsKnowledge where Stage == KnowledgeStage.Draft && SubmittedAt == null;
+  }
+}
+
+// ── steps: how a version moves ────────────────────────────────────────────────────────────────────────────────────────
+
+/// What a step does. ⚠ Appended, never inserted.
+public enum KnowledgeStepKind {
+  /// A writer sends a draft for review.
+  [Label("Sent for review")] Submit,
+  /// A writer takes a draft back out of review, to go on writing.
+  [Label("Taken back")] TakeBack,
+  /// A reviewer publishes a version — one in review, or (with review off) a draft.
+  [Label("Published")] Publish,
+  /// A reviewer sends a version in review back to its writer, saying what to change.
+  [Label("Sent back")] SendBack,
+  /// A reviewer archives the article: no reader reads it.
+  [Label("Archived")] Archive,
+  /// A reviewer brings an archived article back.
+  [Label("Brought back")] Restore,
+}
+
+/// Where a step stands. ⚠ Appended, never inserted.
+public enum KnowledgeStepState {
+  [Label("Waiting")] Waiting,
+  [Label("Done")] Applied,
+  [Label("Refused")] Refused,
+}
+
+/// ONE STEP somebody took with an article — the review trail and the only way a version moves. Made by the person
+/// taking it, under the step's rule; applied after the commit by `KnowledgeStepping`, which checks it again against the
+/// version as it is then.
+public entity KnowledgeStep {
+  [Required] KnowledgeArticle Article;
+  /// The version it moves — none for an archive or a restore.
+  KnowledgeRevision? Revision;
+  KnowledgeStepKind Kind;
+  /// What the person said with it — a reviewer's "what to change", a writer's note to the reviewer.
+  [Classification(Personal.Content), MaxLength(2000)] string? Note;
+  /// Who took it — the person signed in when it was made.
+  [Classification(Personal.Identity)] Principal? By;
+  DateTime At;
+  KnowledgeStepState State;                          // no default — KnowledgeStepping owns it
+  /// Why it was refused, for the person who took it.
+  [MaxLength(300)] string? Problem;
+
+  security {
+    allow read when WritesKnowledge || ReviewsKnowledge || ManagesKnowledge;
+    // SECURITY-INVARIANT(knowledge-published-only-by-a-reviewer-step) — the request half: a writer sends and takes
+    // back; only a reviewer publishes, sends back, archives and restores. Each as themselves.
+    allow create where By == user
+      && (((WritesKnowledge || ReviewsKnowledge) && (Kind == KnowledgeStepKind.Submit || Kind == KnowledgeStepKind.TakeBack))
+          || (ReviewsKnowledge && (Kind == KnowledgeStepKind.Publish || Kind == KnowledgeStepKind.SendBack
+                                   || Kind == KnowledgeStepKind.Archive || Kind == KnowledgeStepKind.Restore)));
+    deny create where Problem != null;
+    deny update;
+    deny delete;
+  }
+}
+
+/// Applies each step after the commit that made it — as the app, which alone moves a version.
+public workflow KnowledgeStepping {
+  Tracks    = KnowledgeStep.State;
+  Autostart = true;
+  Initial   = Waiting;
+
+  state Waiting {
+    Expire { Within = TimeSpan.Zero; Accrues = false; }
+    on Expire {
+      if (ApplyKnowledgeStep(this.Item)) { goto Applied; }
+      goto Refused;
+    }
+  }
+
+  terminal success Applied { }
+  terminal cancel Refused { }
+}
+
+/// Apply `step` — checked against the version and the settings as they are now. Answers whether it was applied; a
+/// refusal says why on the step.
+[SuppressWarning("cost-unbounded-read")]   // one article's published versions — one per language
+bool ApplyKnowledgeStep(KnowledgeStep step) {
+  var now = DateTime.UtcNow;
+  var article = step.Article;
+
+  if (step.Kind == KnowledgeStepKind.Archive || step.Kind == KnowledgeStepKind.Restore) {
+    var archive = step.Kind == KnowledgeStepKind.Archive;
+    if (archive && article.ArchivedAt != null) { step.Problem = "It is already archived."; return false; }
+    if (!archive && article.ArchivedAt == null) { step.Problem = "It is not archived."; return false; }
+    article.ArchivedAt = archive ? now : null;
+    // Out of the meaning index while archived, back in when it returns — as it is out of every search.
+    var archived = article.Id;
+    foreach (var v in KnowledgeRevision.Where(x => x.Article.Id == archived && x.Stage == KnowledgeStage.Published).ToList()) {
+      v.MeaningText = archive ? null : v.SearchText;
+    }
+    Log.Information("Knowledge: " + (archive ? "archived " : "brought back ") + article.Slug + ".");
+    if (archive) { Raise(new ArticleArchived { Article = article }); } else { Raise(new ArticleRestored { Article = article }); }
+    return true;
+  }
+
+  var r = step.Revision;
+  if (r == null) { step.Problem = "Which version? This step names none."; return false; }
+  if (r.Article.Id != article.Id) { step.Problem = "That version is another article's."; return false; }
+
+  if (step.Kind == KnowledgeStepKind.Submit) {
+    if (r.Stage != KnowledgeStage.Draft) { step.Problem = "Only a draft can be sent for review — this one is " + r.Stage.Label.ToLower() + "."; return false; }
+    if (r.Title.Trim() == "") { step.Problem = "Give it a title first."; return false; }
+    if (BodyOf(r).Trim() == "") { step.Problem = "Write something first — the article is empty."; return false; }
+    r.Stage = KnowledgeStage.InReview;
+    r.SubmittedAt = now;
+    Raise(new ArticleSentForReview { Revision = r });
+    return true;
+  }
+
+  if (step.Kind == KnowledgeStepKind.TakeBack) {
+    if (r.Stage != KnowledgeStage.InReview) { step.Problem = "It is not in review."; return false; }
+    r.Stage = KnowledgeStage.Draft;
+    return true;
+  }
+
+  if (step.Kind == KnowledgeStepKind.SendBack) {
+    if (r.Stage != KnowledgeStage.InReview) { step.Problem = "Only a version in review can be sent back."; return false; }
+    if ((step.Note ?? "").Trim() == "") { step.Problem = "Say what to change — the writer reads it."; return false; }
+    r.Stage = KnowledgeStage.Draft;
+    Raise(new ArticleSentBack { Revision = r, Step = step });
+    return true;
+  }
+
+  // Publish.
+  var rules = KnowledgeRulesNow();
+  if (r.Stage == KnowledgeStage.Published) { step.Problem = "It is already published."; return false; }
+  if (r.Stage == KnowledgeStage.Superseded) { step.Problem = "A later version replaced it — start a new draft from it instead."; return false; }
+  if (rules.RequireReview) {
+    // Guarded by tests/review.test.osy `while_review_is_on_nobody_publishes_their_own_words`.
+    if (r.Stage != KnowledgeStage.InReview) { step.Problem = "Send it for review first — a reviewer publishes it."; return false; }
+    if (step.By != null && r.Author != null && step.By.Id == r.Author.Id) {
+      step.Problem = "Somebody else reviews what you wrote.";
+      return false;
+    }
+  }
+  if (r.Title.Trim() == "") { step.Problem = "Give it a title first."; return false; }
+  var words = BodyOf(r);
+  if (words.Trim() == "") { step.Problem = "Write something first — the article is empty."; return false; }
+  var language = r.Language;
+  var articleId = article.Id;
+  var number = r.Number;
+  foreach (var earlier in KnowledgeRevision.Where(x => x.Article.Id == articleId && x.Language == language
+                                                    && x.Stage == KnowledgeStage.Published).ToList()) {
+    earlier.Stage = KnowledgeStage.Superseded;
+    earlier.SupersededAt = now;
+    earlier.MeaningText = null;
+  }
+  r.Stage = KnowledgeStage.Published;
+  r.PublishedAt = now;
+  r.PublishedBy = step.By;
+  if (r.SubmittedAt == null) { r.SubmittedAt = now; }
+  r.SearchText = SearchableText(r.Title, r.Summary, words);
+  r.SearchStems = new Stemmer().StemText(r.SearchText, r.Language);
+  r.MeaningText = article.ArchivedAt == null ? r.SearchText : null;
+  if (article.FirstPublishedAt == null) { article.FirstPublishedAt = now; }
+  Log.Information("Knowledge: published " + article.Slug + " (" + language + ") version " + number + ".");
+  Raise(new ArticlePublished { Revision = r });
+  return true;
+}
+
+/// A version's words — "" for a body nobody has written yet.
+public string BodyOf(KnowledgeRevision r) {
+  string? body = r.Body;
+  return body ?? "";
+}
+
+/// A version's words as plain text — its title, its line and its body without the markdown's marks — for search.
+public string SearchableText(string title, string summary, string body) {
+  // Emphasis marks go without a trace ("**Download PDF**." reads "Download PDF."); the rest become spaces.
+  var plain = (title + "\n" + summary + "\n" + body)
+    .Replace("*", "").Replace("~", "").Replace("`", "")
+    .Replace("#", " ").Replace("_", " ").Replace(">", " ").Replace("|", " ")
+    .Replace("[", " ").Replace("]", " ").Replace("(", " ").Replace(")", " ");
+  return plain.Length > 200000 ? plain.Substring(0, 200000) : plain;
+}

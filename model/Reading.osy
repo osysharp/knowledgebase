@@ -1,0 +1,565 @@
+namespace Osysharp.KnowledgeBase;
+
+using Osysharp.Identity;
+using Osysharp.Markdown;
+using Osysharp.Memory;
+using Osysharp.Stemming;
+
+// ── reading: what the help centre shows, in the reader's language ─────────────────────────────────────────────────────
+//
+// Every read here is the READER's own — the kit's rules decide what they may read, so a customer is never handed a team
+// article, a draft or an archived one, whatever a page asks for. What these add is the LANGUAGE: each article is shown
+// in the reader's language when it has a published version in it, else in the app's own language, else in the language
+// it was written in — and says so.
+
+/// A link to an article, as a list shows it — its title and line in the reader's language.
+public class KnowledgeLink {
+  public string Slug = "";
+  /// Where it opens in the help centre.
+  public string Href = "";
+  public string Title = "";
+  public string Summary = "";
+  /// The language the title is in — not the reader's when the article has no version in theirs.
+  public string Language = "";
+  public bool InAnotherLanguage;
+  /// For the team only.
+  public bool TeamOnly;
+  public DateTime? UpdatedAt;
+}
+
+/// One article, as its page shows it.
+public class KnowledgeArticleView {
+  /// False: no such article, or not one this reader may read — the page says it is not here, and nothing about why.
+  public bool Found;
+  /// Where it opens in the help centre.
+  public string Href = "";
+  /// Show the date its version was published under its title (the settings say).
+  public bool ShowUpdated = true;
+  public Guid Article = Guid.Empty;
+  public Guid Version = Guid.Empty;
+  public string Slug = "";
+  public string Title = "";
+  public string Summary = "";
+  public string Body = "";
+  /// The language of what is shown, and the language the reader reads in.
+  public string Language = "";
+  public string ReaderLanguage = "";
+  /// It has no version in the reader's language yet — shown in another.
+  public bool InAnotherLanguage;
+  public DateTime? UpdatedAt;
+  public int Number;
+  public string Category = "";
+  public string CategorySlug = "";
+  public string CategoryHref = "";
+  public string Section = "";
+  public string SectionSlug = "";
+  public bool TeamOnly;
+  /// Written right to left (its language is).
+  public bool RightToLeft;
+  /// The other articles in its section.
+  public List<KnowledgeLink> Nearby = [];
+  /// Every language it is published in.
+  public List<string> Languages = [];
+}
+
+/// A section of a category, with its articles.
+public class KnowledgeShelfSection {
+  public string Slug = "";
+  public string Name = "";
+  public string Description = "";
+  public List<KnowledgeLink> Articles = [];
+}
+
+/// A category, as the front page and its own page show it.
+public class KnowledgeShelf {
+  public Guid Id = Guid.Empty;
+  public string Slug = "";
+  public string Href = "";
+  public string Name = "";
+  public string Description = "";
+  public bool TeamOnly;
+  /// How many articles the reader can read in it.
+  public int Count;
+  public List<KnowledgeShelfSection> Sections = [];
+}
+
+/// One published version, read light — what a list or a search reads of it (never its words).
+public class KnowledgePublished {
+  public Guid Id = Guid.Empty;
+  public Guid Article = Guid.Empty;
+  public string Language = "";
+  public string Title = "";
+  public string Summary = "";
+  public int Number;
+  public DateTime? PublishedAt;
+}
+
+/// One article a reader may read, read light — where it sits and who it is for.
+public class KnowledgeShelved {
+  public Guid Id = Guid.Empty;
+  public string Slug = "";
+  public string Language = "";
+  public Guid Section = Guid.Empty;
+  public string SectionName = "";
+  public string CategoryName = "";
+  public bool TeamOnly;
+}
+
+/// One version a search matched, with the words a snippet is cut from.
+public class KnowledgeMatched {
+  public Guid Id = Guid.Empty;
+  public Guid Article = Guid.Empty;
+  public string Title = "";
+  public string Summary = "";
+  public string SearchText = "";
+}
+
+/// The version of an article to show a reader of `reader` — theirs, else the app's own language, else the article's
+/// original, else any. `published` is the article's published versions (one per language).
+public KnowledgePublished? KnowledgeVersionFor(List<KnowledgePublished> published, string reader, string original) {
+  if (published.Count == 0) { return null; }
+  var exact = published.FirstOrDefault(r => r.Language == reader);
+  if (exact != null) { return exact; }
+  // "sv-SE" reads "sv".
+  var primary = reader.Contains("-") ? reader.Substring(0, reader.IndexOf("-")) : reader;
+  var near = published.FirstOrDefault(r => r.Language == primary || r.Language.StartsWith(primary + "-"));
+  if (near != null) { return near; }
+  var source = App.Languages[0];
+  return published.FirstOrDefault(r => r.Language == source)
+      ?? published.FirstOrDefault(r => r.Language == original)
+      ?? published.OrderBy(r => r.Language).First();
+}
+
+/// Is `language` written right to left — Arabic, Hebrew, Persian, Urdu and their kin?
+public bool KnowledgeRightToLeft(string language) {
+  var primary = language.Contains("-") ? language.Substring(0, language.IndexOf("-")) : language;
+  return primary == "ar" || primary == "he" || primary == "fa" || primary == "ur" || primary == "ps" || primary == "yi"
+      || primary == "dv" || primary == "ckb" || primary == "sd" || primary == "ug";
+}
+
+/// Is `language` other than the reader's?
+bool KnowledgeOtherLanguage(string language, string reader) {
+  var primary = reader.Contains("-") ? reader.Substring(0, reader.IndexOf("-")) : reader;
+  return language != reader && language != primary && !language.StartsWith(primary + "-");
+}
+
+// ⚑ EVERY READ HERE IS A WINDOW. A page reads what it shows — the front page a count per category and the six newest,
+//   a category its own articles, an article itself and eight beside it, a search its best few — and reads each
+//   version LIGHT: a list never reads an article's words, which only its own page does. Reading the whole knowledge
+//   base on every open is what a help centre with thousands of articles cannot afford.
+
+/// The published versions of the articles `ids`, light.
+[SuppressWarning("cost-unbounded-read")]   // the published versions of the articles the caller names — one per language each
+List<KnowledgePublished> KnowledgePublishedOf(List<Guid> ids) {
+  if (ids.Count == 0) { return []; }
+  return KnowledgeRevision.Where(r => ids.Contains(r.Article.Id) && r.Stage == KnowledgeStage.Published)
+    .Select(r => new KnowledgePublished { Id = r.Id, Article = r.Article.Id, Language = r.Language, Title = r.Title,
+                                          Summary = r.Summary, Number = r.Number, PublishedAt = r.PublishedAt })
+    .ToList();
+}
+
+/// `articles` as links in the reader's language, in their order — the team's own only when `includeTeam`.
+List<KnowledgeLink> KnowledgeLinksFor(List<KnowledgeShelved> articles, bool includeTeam) {
+  var reader = Session.Language;
+  var shown = articles.Where(a => includeTeam || !a.TeamOnly).ToList();
+  var published = KnowledgePublishedOf(shown.Select(a => a.Id).ToList());
+  List<KnowledgeLink> links = [];
+  foreach (var a in shown) {
+    var aid = a.Id;
+    var v = KnowledgeVersionFor(published.Where(r => r.Article == aid).ToList(), reader, a.Language);
+    if (v == null) { continue; }
+    links.Add(new KnowledgeLink { Slug = a.Slug, Href = KnowledgePath("a/" + a.Slug), Title = v.Title, Summary = v.Summary,
+                                  Language = v.Language, InAnotherLanguage = KnowledgeOtherLanguage(v.Language, reader),
+                                  TeamOnly = a.TeamOnly, UpdatedAt = v.PublishedAt });
+  }
+  return links;
+}
+
+/// One article for its page, by its address — in the reader's language, or the nearest there is.
+[AllowAnonymous]
+public KnowledgeArticleView KnowledgeArticleView(string slug) {
+  var reader = Session.Language;
+  var view = new KnowledgeArticleView { Slug = slug, ReaderLanguage = reader };
+  var a = KnowledgeArticle.FirstOrDefault(x => x.Slug == slug);
+  if (a == null || a.FirstPublishedAt == null || a.ArchivedAt != null) { return view; }
+  var aid = a.Id;
+  var published = KnowledgePublishedOf([aid]);
+  var chosen = KnowledgeVersionFor(published, reader, a.Language);
+  if (chosen == null) { return view; }
+  var chosenId = chosen.Id;
+  // Only the version shown is read whole — its words.
+  var v = KnowledgeRevision.Single(r => r.Id == chosenId);
+  var section = a.Section;
+  var category = section.Category;
+  view.Found = true;
+  view.Href = KnowledgePath("a/" + a.Slug);
+  view.ShowUpdated = KnowledgeRulesNow().ShowUpdated;
+  view.Article = a.Id;
+  view.Version = v.Id;
+  view.Title = v.Title;
+  view.Summary = v.Summary;
+  view.Body = BodyOf(v);
+  view.Language = v.Language;
+  view.InAnotherLanguage = KnowledgeOtherLanguage(v.Language, reader);
+  view.UpdatedAt = v.PublishedAt;
+  view.Number = v.Number;
+  view.Category = category.Name;
+  view.CategorySlug = category.Slug;
+  view.CategoryHref = KnowledgePath("c/" + category.Slug);
+  view.RightToLeft = KnowledgeRightToLeft(v.Language);
+  view.Section = section.Name;
+  view.SectionSlug = section.Slug;
+  view.TeamOnly = a.Audience == KnowledgeAudience.Team || category.Audience == KnowledgeAudience.Team;
+  view.Languages = published.Select(r => r.Language).OrderBy(l => l).ToList();
+  var sectionId = section.Id;
+  var nearby = KnowledgeArticle.Where(x => x.Section.Id == sectionId && x.Id != aid && x.FirstPublishedAt != null && x.ArchivedAt == null)
+    .OrderBy(x => x.Position).ThenBy(x => x.Slug).Take(8)
+    .Select(x => new KnowledgeShelved { Id = x.Id, Slug = x.Slug, Language = x.Language, Section = x.Section.Id,
+                                        TeamOnly = x.Audience == KnowledgeAudience.Team || x.Section.Category.Audience == KnowledgeAudience.Team })
+    .ToList();
+  view.Nearby = KnowledgeLinksFor(nearby, view.TeamOnly);
+  return view;
+}
+
+/// How many articles one category holds — a row of `KnowledgeShelves`' grouped count.
+public class KnowledgeCategoryCount {
+  public Guid Category;
+  public int Count;
+}
+
+/// The categories a reader can read something in, in order — each with how many articles it holds, for the front page.
+/// `includeTeam`: the team's own too, for a reader who may read them (marked `TeamOnly`); never for anybody else.
+[AllowAnonymous]
+[SuppressWarning("cost-unbounded-read")]   // the help centre's categories — each one a shelf the front page draws
+public List<KnowledgeShelf> KnowledgeShelves(bool includeTeam = false) {
+  // Every category's count in one grouped read — the database counts, a row per category, however many categories
+  // and articles there are.
+  var counts = new Dictionary<Guid, int>();
+  var grouped = includeTeam
+    ? KnowledgeArticle.Where(a => a.FirstPublishedAt != null && a.ArchivedAt == null)
+        .GroupBy(a => a.Section.Category.Id).Select(g => new KnowledgeCategoryCount { Category = g.Key, Count = g.Count() }).ToList()
+    : KnowledgeArticle.Where(a => a.FirstPublishedAt != null && a.ArchivedAt == null && a.Audience == KnowledgeAudience.Everyone)
+        .GroupBy(a => a.Section.Category.Id).Select(g => new KnowledgeCategoryCount { Category = g.Key, Count = g.Count() }).ToList();
+  foreach (var g in grouped) { counts[g.Category] = g.Count; }
+  List<KnowledgeShelf> shelves = [];
+  foreach (var c in KnowledgeCategory.OrderBy(c => c.Position).ThenBy(c => c.Name).ToList()) {
+    if (c.Audience == KnowledgeAudience.Team && !includeTeam) { continue; }
+    var count = counts.ContainsKey(c.Id) ? counts[c.Id] : 0;
+    if (count == 0) { continue; }
+    shelves.Add(new KnowledgeShelf { Id = c.Id, Slug = c.Slug, Href = KnowledgePath("c/" + c.Slug), Name = c.Name,
+                                     Description = c.Description, TeamOnly = c.Audience == KnowledgeAudience.Team, Count = count });
+  }
+  return shelves;
+}
+
+/// One category by its address, with its sections and their articles — null when there is nothing in it this reader
+/// can read.
+[AllowAnonymous]
+[SuppressWarning("cost-unbounded-read")]   // one category's sections and articles — the category page lists every one
+public KnowledgeShelf? KnowledgeShelf(string slug, bool includeTeam = false) {
+  var c = KnowledgeCategory.FirstOrDefault(x => x.Slug == slug);
+  if (c == null || (c.Audience == KnowledgeAudience.Team && !includeTeam)) { return null; }
+  var cid = c.Id;
+  var articles = KnowledgeArticle.Where(a => a.Section.Category.Id == cid && a.FirstPublishedAt != null && a.ArchivedAt == null)
+    .OrderBy(a => a.Position).ThenBy(a => a.Slug)
+    .Select(a => new KnowledgeShelved { Id = a.Id, Slug = a.Slug, Language = a.Language, Section = a.Section.Id,
+                                        TeamOnly = a.Audience == KnowledgeAudience.Team || a.Section.Category.Audience == KnowledgeAudience.Team })
+    .ToList();
+  var links = KnowledgeLinksFor(articles, includeTeam);
+  var shelf = new KnowledgeShelf { Id = c.Id, Slug = c.Slug, Href = KnowledgePath("c/" + c.Slug), Name = c.Name,
+                                   Description = c.Description, TeamOnly = c.Audience == KnowledgeAudience.Team };
+  foreach (var s in KnowledgeSection.Where(x => x.Category.Id == cid).OrderBy(x => x.Position).ThenBy(x => x.Name).ToList()) {
+    var sid = s.Id;
+    var inSection = articles.Where(a => a.Section == sid).Select(a => a.Slug).ToList();
+    var shown = links.Where(l => inSection.Contains(l.Slug)).ToList();
+    if (shown.Count == 0) { continue; }
+    shelf.Sections.Add(new KnowledgeShelfSection { Slug = s.Slug, Name = s.Name, Description = s.Description, Articles = shown });
+    shelf.Count = shelf.Count + shown.Count;
+  }
+  return shelf.Count == 0 ? null : shelf;
+}
+
+/// The articles most recently published or updated, newest first — what the front page lists under the categories.
+[AllowAnonymous]
+[SuppressWarning("cost-unbounded-read")]   // the articles of the newest versions, already taken to four times what is shown
+public List<KnowledgeLink> KnowledgeRecent(int take = 6, bool includeTeam = false) {
+  var latest = KnowledgeRevision.Where(r => r.Stage == KnowledgeStage.Published && r.Article.ArchivedAt == null)
+    .OrderByDescending(r => r.PublishedAt).Take(take * 4).Select(r => r.Article.Id).ToList();
+  List<Guid> ids = [];
+  foreach (var id in latest) { if (!ids.Contains(id)) { ids.Add(id); } }
+  var found = KnowledgeArticle.Where(a => ids.Contains(a.Id))
+    .Select(a => new KnowledgeShelved { Id = a.Id, Slug = a.Slug, Language = a.Language, Section = a.Section.Id,
+                                        TeamOnly = a.Audience == KnowledgeAudience.Team || a.Section.Category.Audience == KnowledgeAudience.Team })
+    .ToList();
+  List<KnowledgeShelved> ordered = [];
+  foreach (var id in ids) {
+    var a = found.FirstOrDefault(x => x.Id == id);
+    if (a != null) { ordered.Add(a); }
+  }
+  return KnowledgeLinksFor(ordered, includeTeam).Take(take).ToList();
+}
+
+// ── search ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// One article a search found.
+public class KnowledgeHit {
+  public string Slug = "";
+  public string Href = "";
+  public string Title = "";
+  public string Summary = "";
+  /// A few words from it around what was searched for.
+  public string Snippet = "";
+  public string Category = "";
+  public string Section = "";
+  public string Language = "";
+  public bool InAnotherLanguage;
+  public bool TeamOnly;
+}
+
+/// What a search found, and how it searched.
+public class KnowledgeResults {
+  public string Query = "";
+  public List<KnowledgeHit> Hits = [];
+  /// No article has every word — these have some of them.
+  public bool Loosened;
+  /// A search by meaning could not run, and why (no embedder is set up) — "" when it ran.
+  public string Unavailable = "";
+}
+
+/// Search the articles the reader may read — every word, and when no article has them all, any of them. Each article
+/// once, in the reader's language when it has a version in it. `includeTeam`: the team's own articles too, for a reader
+/// who may read them — the help centre's search and a customer's chat pass false, and then a team article is never a
+/// hit, whoever is searching.
+[AllowAnonymous]
+public KnowledgeResults SearchKnowledge(string query, bool includeTeam = false, int take = 20) {
+  var words = KnowledgeWords(query);
+  var results = new KnowledgeResults { Query = query.Trim() };
+  if (words.Count == 0) { return results; }
+  var all = string.Join(" ", words);
+  results.Hits = KnowledgeHits(all, words, includeTeam, take);
+  if (results.Hits.Count == 0 && words.Count > 1) {
+    results.Hits = KnowledgeHits(string.Join(" or ", words), words, includeTeam, take);
+    results.Loosened = results.Hits.Count > 0;
+  }
+  return results;
+}
+
+/// Articles that might answer what a person is writing — any of its words, the best first. As many as the settings
+/// say (none when they say none); `take` overrides that.
+[AllowAnonymous]
+public List<KnowledgeHit> SuggestKnowledge(string text, int take = 0) {
+  var count = take > 0 ? take : KnowledgeRulesNow().Suggestions;
+  if (count <= 0) { return []; }
+  var words = KnowledgeWords(text);
+  if (words.Count == 0) { return []; }
+  return KnowledgeHits(string.Join(" or ", words), words, false, count);
+}
+
+/// The words of `text` worth searching for — letters and digits, two or more, each once, at most twelve.
+public List<string> KnowledgeWords(string text) {
+  List<string> words = [];
+  var word = "";
+  foreach (var c in (text ?? "").ToLower() + " ") {
+    if (char.IsLetterOrDigit(c)) { word = word + c; continue; }
+    if (word.Length >= 2 && !words.Contains(word) && word != "or" && word != "and" && word != "not") { words.Add(word); }
+    word = "";
+    if (words.Count >= 12) { break; }
+  }
+  return words;
+}
+
+/// Run `q` over the published versions — the best few — and keep each article once, in the reader's language. A version
+/// matches on its words as written, or on their base forms (`SearchStems`) against the query's in the reader's language
+/// — so a Swedish reader's "betalningen" finds "betalningar", and an Arabic reader's "بالبطاقة" finds "البطاقات".
+List<KnowledgeHit> KnowledgeHits(string q, List<string> words, bool includeTeam, int take) {
+  var reader = Session.Language;
+  var stemmer = new Stemmer();
+  var qs = q.Contains(" or ")
+    ? string.Join(" or ", words.Select(w => stemmer.Stem(w, reader)).Distinct())
+    : string.Join(" ", words.Select(w => stemmer.Stem(w, reader)).Distinct());
+  var found = KnowledgeRevision.Where(r => r.Stage == KnowledgeStage.Published && r.Article.ArchivedAt == null
+                                        && (r.SearchText.Matches(q) || r.SearchStems.Matches(qs)))
+    .OrderByDescending(r => r.SearchText.TextScore(q) + r.SearchStems.TextScore(qs)).Take(take * 3)
+    .Select(r => new KnowledgeMatched { Id = r.Id, Article = r.Article.Id, Title = r.Title, Summary = r.Summary, SearchText = r.SearchText })
+    .ToList();
+  // A snippet is cut around a word as written, or one of its forms (a stem is the start of every form).
+  List<string> marks = words.ToList();
+  foreach (var w in words) {
+    var stem = stemmer.Stem(w, reader);
+    if (stem.Length >= 3 && !marks.Contains(stem)) { marks.Add(stem); }
+  }
+  // A title that has every word first; otherwise the database's ranking.
+  return KnowledgeHitsOf(found, marks, includeTeam, take)
+    .OrderByDescending(h => words.All(w => h.Title.ToLower().Contains(w)) ? 1 : 0).ToList();
+}
+
+/// The articles of `found` (versions, best first) a reader may be shown — each article once, in the reader's language
+/// when it has a version in it, at most `take`; a team-only article only when `includeTeam`, WHOEVER is asking.
+/// SECURITY-INVARIANT(a-team-article-never-reaches-a-customer-search): a help centre's search, a customer's chat and a
+/// customer-facing suggestion pass `includeTeam: false`, and then a team article is no hit even for a reader who could
+/// open it — a signed-in agent searching the public help centre gets what a customer gets. Guarded by
+/// tests/search.test.osy `a_team_article_is_never_in_a_customer_search_even_by_meaning` (and the word half,
+/// tests/audience.test.osy).
+[SuppressWarning("cost-unbounded-read")]   // the articles of the hits in hand — a search's best few
+List<KnowledgeHit> KnowledgeHitsOf(List<KnowledgeMatched> found, List<string> words, bool includeTeam, int take) {
+  var reader = Session.Language;
+  List<Guid> ids = [];
+  foreach (var m in found) { if (!ids.Contains(m.Article)) { ids.Add(m.Article); } }
+  var articles = KnowledgeArticle.Where(a => ids.Contains(a.Id))
+    .Select(a => new KnowledgeShelved { Id = a.Id, Slug = a.Slug, Language = a.Language, Section = a.Section.Id,
+                                        SectionName = a.Section.Name, CategoryName = a.Section.Category.Name,
+                                        TeamOnly = a.Audience == KnowledgeAudience.Team || a.Section.Category.Audience == KnowledgeAudience.Team })
+    .ToList();
+  var published = KnowledgePublishedOf(ids);
+  List<KnowledgeHit> hits = [];
+  foreach (var id in ids) {
+    var a = articles.FirstOrDefault(x => x.Id == id);
+    if (a == null || (a.TeamOnly && !includeTeam)) { continue; }
+    var v = KnowledgeVersionFor(published.Where(r => r.Article == id).ToList(), reader, a.Language);
+    if (v == null) { continue; }
+    // The snippet from the version shown, when the search matched it; else its line.
+    var vid = v.Id;
+    var matched = found.FirstOrDefault(m => m.Id == vid);
+    hits.Add(new KnowledgeHit { Slug = a.Slug, Href = KnowledgePath("a/" + a.Slug), Title = v.Title, Summary = v.Summary,
+                                Snippet = matched == null ? v.Summary : KnowledgeSnippet(KnowledgeBodyText(matched), words),
+                                Category = a.CategoryName, Section = a.SectionName, Language = v.Language,
+                                InAnotherLanguage = KnowledgeOtherLanguage(v.Language, reader), TeamOnly = a.TeamOnly });
+    if (hits.Count >= take) { break; }
+  }
+  return hits;
+}
+
+/// Articles about `query` by MEANING — the app's embedder reads what each published version is about, so a question
+/// worded nothing like an article still finds it, whatever language either is in. Each article once, in the reader's
+/// language when it has a version in it, the closest first. `includeTeam` as for `SearchKnowledge`. With no embedder
+/// set up the results say so (`Unavailable`) and hold nothing — word search still works.
+[SuppressWarning("cost-unbounded-read")]   // the versions the index ranked, already limited to four times what is shown
+public KnowledgeResults KnowledgeByMeaning(string query, bool includeTeam = false, int take = 5) {
+  var results = new KnowledgeResults { Query = query.Trim() };
+  if (results.Query == "") { return results; }
+  List<SearchHit> hits = [];
+  try {
+    hits = Memory.Search(results.Query, of: [KnowledgeRevision], limit: take * 4);
+  } catch (Exception e) {
+    results.Unavailable = "Search by meaning is not set up — " + e.Message;
+    return results;
+  }
+  List<Guid> versions = [];
+  foreach (var h in hits) { if (!versions.Contains(h.SourceEntityId)) { versions.Add(h.SourceEntityId); } }
+  if (versions.Count == 0) { return results; }
+  var matched = KnowledgeRevision.Where(r => versions.Contains(r.Id) && r.Stage == KnowledgeStage.Published
+                                          && r.Article.ArchivedAt == null)
+    .Select(r => new KnowledgeMatched { Id = r.Id, Article = r.Article.Id, Title = r.Title, Summary = r.Summary, SearchText = r.SearchText })
+    .ToList();
+  // In the order the index ranked them.
+  List<KnowledgeMatched> ranked = [];
+  foreach (var id in versions) {
+    var m = matched.FirstOrDefault(x => x.Id == id);
+    if (m != null) { ranked.Add(m); }
+  }
+  results.Hits = KnowledgeHitsOf(ranked, KnowledgeWords(results.Query), includeTeam, take);
+  return results;
+}
+
+/// A matched version's words as plain text, without its title and line — what a snippet is cut from, so a hit does
+/// not repeat its own title.
+string KnowledgeBodyText(KnowledgeMatched v) {
+  var head = SearchableText(v.Title, v.Summary, "");
+  return v.SearchText.StartsWith(head) ? v.SearchText.Substring(head.Length) : v.SearchText;
+}
+
+/// About 160 characters of `text` around the first of `words` it has.
+public string KnowledgeSnippet(string text, List<string> words) {
+  var flat = text.Replace("\n", " ").Replace("  ", " ").Trim();
+  var lower = flat.ToLower();
+  var at = -1;
+  foreach (var w in words) {
+    var i = lower.IndexOf(w);
+    if (i >= 0 && (at < 0 || i < at)) { at = i; }
+  }
+  if (at < 0) { at = 0; }
+  var start = at > 60 ? at - 60 : 0;
+  var length = flat.Length - start > 160 ? 160 : flat.Length - start;
+  var piece = flat.Substring(start, length).Trim();
+  return (start > 0 ? "…" : "") + piece + (start + length < flat.Length ? "…" : "");
+}
+
+// ── for search engines ────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Every public article's address, for a search engine — served at /help-centre/sitemap.xml. Each address once; the
+/// platform names its address in every language the app speaks.
+[Serve("/help-centre/sitemap.xml")]
+[AllowAnonymous]
+[SuppressWarning("cost-unbounded-read")]   // every public category and article — that list is what a sitemap is
+public string KnowledgeSitemap() {
+  var xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">";
+  var root = App.BaseUrl.TrimEnd('/');
+  xml = xml + "<url><loc>" + root + KnowledgePath() + "</loc></url>";
+  foreach (var slug in KnowledgeCategory.Where(c => c.Audience == KnowledgeAudience.Everyone).OrderBy(c => c.Position)
+                                        .Select(c => c.Slug).ToList()) {
+    xml = xml + "<url><loc>" + root + KnowledgePath("c/" + slug) + "</loc></url>";
+  }
+  foreach (var slug in KnowledgeArticle.Where(a => a.FirstPublishedAt != null && a.ArchivedAt == null && a.Audience == KnowledgeAudience.Everyone
+                                                   && a.Section.Category.Audience == KnowledgeAudience.Everyone)
+                                       .OrderBy(a => a.Slug).Select(a => a.Slug).ToList()) {
+    xml = xml + "<url><loc>" + root + KnowledgePath("a/" + slug) + "</loc></url>";
+  }
+  return xml + "</urlset>";
+}
+
+// ── what each help-centre page reads, in one round trip ───────────────────────────────────────────────────────────────
+
+/// What a help-centre page shows — its places, and the part it is: the front page's shelves and recent articles, a
+/// category, an article, or search results.
+public class KnowledgePage {
+  public KnowledgePlaces Places = new KnowledgePlaces();
+  public List<KnowledgeShelf> Shelves = [];
+  public List<KnowledgeLink> Recent = [];
+  public KnowledgeShelf? Shelf;
+  public KnowledgeArticleView Article = new KnowledgeArticleView();
+  public KnowledgeResults Results = new KnowledgeResults();
+}
+
+/// The front page — the categories and what changed lately (the team's own too, for the team).
+[AllowAnonymous]
+public KnowledgePage KnowledgeFrontNow() {
+  return new KnowledgePage { Places = KnowledgePlacesNow(), Shelves = KnowledgeShelves(includeTeam: true),
+                             Recent = KnowledgeRecent(6, includeTeam: true) };
+}
+
+/// A category's page.
+[AllowAnonymous]
+public KnowledgePage KnowledgeCategoryNow(string slug) {
+  return new KnowledgePage { Places = KnowledgePlacesNow(), Shelf = KnowledgeShelf(slug, includeTeam: true) };
+}
+
+/// An article's page.
+[AllowAnonymous]
+public KnowledgePage KnowledgeArticleNow(string slug) {
+  return new KnowledgePage { Places = KnowledgePlacesNow(), Article = KnowledgeArticleView(slug) };
+}
+
+/// The search page — the public articles only, whoever searches.
+[AllowAnonymous]
+public KnowledgePage KnowledgeResultsNow(string query) {
+  return new KnowledgePage { Places = KnowledgePlacesNow(), Results = SearchKnowledge(query, includeTeam: false) };
+}
+
+/// One public version of an article or a category, as a page's head reads it.
+public class KnowledgeHeadLine {
+  public string Language = "";
+  public string Title = "";
+  public string Summary = "";
+  public DateTime? At;
+  public string Category = "";
+  public string CategorySlug = "";
+}
+
+/// The head line in the reader's language — theirs, else the app's own language, else the first.
+public KnowledgeHeadLine KnowledgeHeadFor(List<KnowledgeHeadLine> lines, string reader) {
+  var primary = reader.Contains("-") ? reader.Substring(0, reader.IndexOf("-")) : reader;
+  return lines.FirstOrDefault(l => l.Language == reader)
+      ?? lines.FirstOrDefault(l => l.Language == primary)
+      ?? lines.FirstOrDefault(l => l.Language == App.Languages[0])
+      ?? lines[0];
+}

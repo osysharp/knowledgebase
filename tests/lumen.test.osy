@@ -1,0 +1,117 @@
+// Lumen's documentation every test starts from. Owen owns it, Eda edits (reviews and publishes), Wren and Will write,
+// and Pia is a photographer with an account. Three categories: "Getting started" and "Editing photos" for everyone, and
+// "Support playbooks" for the team only. Nothing is written yet — each test writes and publishes what it needs, the way
+// the team would (`Published`).
+using Osysharp.Identity;
+using Osysharp.KnowledgeBase;
+using KnowledgeKitTests;
+
+[TestFixture]
+void Lumen() {
+  Person("owen@lumen.test", "Owen Park", DocsRole.Owner);
+  Person("eda@lumen.test", "Eda Lind", DocsRole.Editor);
+  Person("wren@lumen.test", "Wren Hale", DocsRole.Writer);
+  Person("will@lumen.test", "Will Ames", DocsRole.Writer);
+  Person("pia@photos.test", "Pia Moreno", DocsRole.Photographer);
+  var start = new KnowledgeCategory { Name = "Getting started", Slug = "getting-started", Position = 1,
+                                      Description = "Install Lumen, open your first photo and find your way around." };
+  new KnowledgeSection { Category = start, Name = "Installing", Slug = "installing", Position = 1 };
+  new KnowledgeSection { Category = start, Name = "Your account", Slug = "your-account", Position = 2 };
+  var editing = new KnowledgeCategory { Name = "Editing photos", Slug = "editing-photos", Position = 2,
+                                        Description = "Exposure, colour, masks and presets." };
+  new KnowledgeSection { Category = editing, Name = "Colour", Slug = "colour", Position = 1 };
+  new KnowledgeSection { Category = editing, Name = "Presets", Slug = "presets", Position = 2 };
+  var playbooks = new KnowledgeCategory { Name = "Support playbooks", Slug = "support-playbooks", Position = 3,
+                                          Audience = KnowledgeAudience.Team, Description = "How the team answers the hard ones." };
+  new KnowledgeSection { Category = playbooks, Name = "Refunds", Slug = "refunds", Position = 1 };
+}
+
+void Person(string email, string name, DocsRole role) {
+  var p = new Person { Email = email, DisplayName = name, CodeHash = Security.HashPassword("1234") };
+  new RoleGrant { Member = p, Role = role };
+}
+
+principal Owen => Person.Single(p => p.Email == "owen@lumen.test");
+principal Eda => Person.Single(p => p.Email == "eda@lumen.test");
+principal Wren => Person.Single(p => p.Email == "wren@lumen.test");
+principal Will => Person.Single(p => p.Email == "will@lumen.test");
+principal Pia => Person.Single(p => p.Email == "pia@photos.test");
+
+/// A section by its address, as the owner reads it.
+KnowledgeSection SectionOf(string slug) {
+  KnowledgeSection? found = null;
+  runas (Owen) { found = KnowledgeSection.Single(s => s.Slug == slug); }
+  return found!;
+}
+
+/// Wren writes an article in `section` — its title, its line and its words — and Eda reviews and publishes it, the way
+/// the team does. Answers its address.
+string Published(string section, string title, string body, string summary = "",
+                 KnowledgeAudience audience = KnowledgeAudience.Everyone) {
+  var slug = "";
+  runas (Wren) {
+    var s = KnowledgeSection.Single(x => x.Slug == section);
+    var draft = NewKnowledgeArticle(s, title, audience: audience);
+    draft.Summary = summary;
+    draft.Body = body;
+    UnitOfWork.Commit();
+    slug = draft.Article.Slug;
+    SendKnowledgeForReview(draft);
+  }
+  Background.Settle();
+  runas (Eda) { PublishKnowledge(VersionOf(slug, "en", KnowledgeStage.InReview)); }
+  Background.Settle();
+  return slug;
+}
+
+/// Wren writes the `language` version of the article at `slug` and Eda publishes it.
+void Translated(string slug, string language, string title, string body, string summary = "") {
+  runas (Wren) {
+    var draft = KnowledgeDraft(KnowledgeArticle.Single(a => a.Slug == slug), language);
+    draft.Title = title;
+    draft.Summary = summary;
+    draft.Body = body;
+    UnitOfWork.Commit();
+    SendKnowledgeForReview(draft);
+  }
+  Background.Settle();
+  runas (Eda) { PublishKnowledge(VersionOf(slug, language, KnowledgeStage.InReview)); }
+  Background.Settle();
+}
+
+/// The version of the article at `slug` in `language` at `stage`, as the editor reads it.
+KnowledgeRevision VersionOf(string slug, string language, KnowledgeStage stage) {
+  KnowledgeRevision? found = null;
+  runas (Eda) {
+    found = KnowledgeRevision.Where(r => r.Article.Slug == slug && r.Language == language && r.Stage == stage)
+      .OrderByDescending(r => r.Number).First();
+  }
+  return found!;
+}
+
+/// Where each version of the article at `slug` stands, as the editor reads it — "en 1 Published", oldest first.
+List<string> StagesOf(string slug) {
+  List<string> says = [];
+  runas (Eda) {
+    says = KnowledgeRevision.Where(r => r.Article.Slug == slug).OrderBy(r => r.Language).ThenBy(r => r.Number).ToList()
+      .Select(r => r.Language + " " + r.Number + " " + r.Stage.ToString()).ToList();
+  }
+  return says;
+}
+
+/// Why the latest step on the article at `slug` was refused — "" when it was not.
+string RefusedBecause(string slug) {
+  var why = "";
+  runas (Eda) {
+    var s = KnowledgeStep.Where(x => x.Article.Slug == slug).OrderByDescending(x => x.At).First();
+    why = s.State == KnowledgeStepState.Refused ? (s.Problem ?? "") : "";
+  }
+  return why;
+}
+
+/// What the docs team was told, oldest first.
+List<string> Told() {
+  List<string> says = [];
+  runas (Owen) { says = DocsNote.OrderBy(n => n.CreatedAt).Select(n => n.Says).ToList(); }
+  return says;
+}

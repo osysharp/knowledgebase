@@ -1,0 +1,159 @@
+namespace Osysharp.KnowledgeBase;
+
+using Osysharp.Identity;
+
+// ── what the app says ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Who reads the articles only the team may read (`KnowledgeAudience.Team`) — `policy ReadsTeamKnowledge => IsStaff;`.
+policy ReadsTeamKnowledge;
+
+/// Who writes: new articles, drafts, a version in another language, and sending a draft for review.
+/// `policy WritesKnowledge => IsStaff;`
+policy WritesKnowledge;
+
+/// Who reviews: publishes a version (another person's, while the settings ask for a review), sends one back with a note,
+/// and archives an article or brings it back. `policy ReviewsKnowledge => IsEditor;`
+policy ReviewsKnowledge;
+
+/// Who arranges the help centre — its categories and sections — and keeps its settings. `policy ManagesKnowledge => IsAdmin;`
+policy ManagesKnowledge;
+
+/// How the app's knowledge base is set up — `app.Knowledge = new KnowledgeSetup { Name = "Lumen Docs" };`.
+[AppSetting("Knowledge")]
+public class KnowledgeSetup {
+  /// The help centre's name, as its front page and a search engine say it ("Lumen Docs"). Empty: "Help centre".
+  public string Name = "";
+  /// Where the help centre lives. The kit's own pages are at /help-centre; an app that takes them over at another
+  /// address (its own `[Route]` with the same component name) says that address here, so every link the kit makes
+  /// follows.
+  public string Path = "/help-centre";
+  /// Where a reader who did not find their answer goes to ask a person — the app's contact form or chat ("/contact").
+  /// Empty: the help centre offers no way to ask.
+  public string ContactPath = "";
+  /// What that link says.
+  public string ContactLabel = "Contact us";
+  /// Where the team's desk lives — the kit's own pages are at /knowledge; an app that takes them over elsewhere says so.
+  public string DeskPath = "/knowledge";
+}
+
+// ── what happens to articles ──────────────────────────────────────────────────────────────────────────────────────────
+// The kit tells nobody by itself: it raises these, and any package that sees them, or the app, hears them — after the
+// commit that made the step, as the app, so a handler may notify people or write on records of its own:
+//     [On] void TellTheEditor(ArticleSentForReview e) { Notify(EditorOnDuty(), e); }   // says "Ada sent an article for review."
+
+/// A version was sent for review — the reviewers may want to know.
+[Event("Sent for review")]
+public sealed class ArticleSentForReview {
+  public KnowledgeRevision Revision;
+  /// "Ada Lindqvist sent an article for review." — its writer, as the reader may read them.
+  public override string Sentence() {
+    var by = Revision.Author == null ? "" : (Revision.Author.DisplayName != "" ? Revision.Author.DisplayName : Revision.Author.Email);
+    return by != "" ? $"{by} sent an article for review." : "An article waits for review.";
+  }
+}
+
+/// A version was published — it is what readers of its language read now.
+[Event("Article published")]
+public sealed class ArticlePublished { public KnowledgeRevision Revision; }
+
+/// A reviewer sent a version back to its writer, with what to change (`Step.Note`).
+[Event("Sent back")]
+public sealed class ArticleSentBack {
+  public KnowledgeRevision Revision;
+  public KnowledgeStep Step;
+  /// "Sent back: the screenshots are from the old settings page." — what the reviewer said to change.
+  public override string Sentence() {
+    var note = Step.Note ?? "";
+    return note != "" ? $"Sent back: {note}" : "Your article was sent back with changes to make.";
+  }
+}
+
+/// An article was archived — no reader reads it.
+[Event("Article archived")]
+public sealed class ArticleArchived { public KnowledgeArticle Article; }
+
+/// An archived article was brought back.
+[Event("Article restored")]
+public sealed class ArticleRestored { public KnowledgeArticle Article; }
+
+/// The help centre's name.
+[AllowAnonymous]
+public string KnowledgeName() {
+  var name = App.Setting<KnowledgeSetup>().Name;
+  return name == "" ? "Help centre" : name;
+}
+
+/// The address of the help centre, or of a place in it ("" for its front page, "a/reset-your-password").
+[AllowAnonymous]
+public string KnowledgePath(string place = "") {
+  var root = App.Setting<KnowledgeSetup>().Path.TrimEnd('/');
+  return place == "" ? (root == "" ? "/" : root) : root + "/" + place;
+}
+
+/// The address of the team's desk, or of a place in it.
+public string KnowledgeDeskPath(string place = "") {
+  var root = App.Setting<KnowledgeSetup>().DeskPath.TrimEnd('/');
+  return place == "" ? (root == "" ? "/" : root) : root + "/" + place;
+}
+
+/// Where things are, for a page that links to them — read once (`var places = KnowledgePlacesNow();`).
+public class KnowledgePlaces {
+  public string Name = "";
+  public string Home = "";
+  public string Search = "";
+  /// Where to ask a person — "" when the app names nowhere.
+  public string Contact = "";
+  public string ContactLabel = "";
+  public string Desk = "";
+}
+
+/// Where the help centre's places are.
+[AllowAnonymous]
+public KnowledgePlaces KnowledgePlacesNow() {
+  var setup = App.Setting<KnowledgeSetup>();
+  return new KnowledgePlaces { Name = KnowledgeName(), Home = KnowledgePath(), Search = KnowledgePath("search"),
+                               Contact = setup.ContactPath, ContactLabel = setup.ContactLabel, Desk = KnowledgeDeskPath() };
+}
+
+// ── the settings the team keeps───────────────────────────────────────────────────────────────────────────────────────
+
+/// Whether a version needs a second person before it is published, and how the help centre helps a person find an
+/// answer. One row, made the first time the settings page is opened; none means the defaults. The page
+/// is generated: `KnowledgeSettingsPage` at `/settings/knowledge`, which an app takes over by name.
+[Settings("Knowledge base", Authorize = ManagesKnowledge, Route = "/settings/knowledge", Order = 70, Icon = Icons.File,
+          Hint = "Whether articles are reviewed before they are published, and how the help centre suggests them.",
+          Description = "Articles are written as drafts and published as numbered versions. With review on, a version is published by somebody other than the person who wrote it.",
+          Saved = "Knowledge base settings saved.")]
+[SettingsGroup("Publishing", "Who has to see a version before readers do.")]
+[SettingsGroup("Help centre", "How a person finds an answer before they ask.")]
+public entity KnowledgeSettings {
+  [Setting("Review before publishing", Group = "Publishing", Hint = "On, a version is published by a reviewer who did not write it. Off, a reviewer may publish their own.")]
+  bool RequireReview = true;
+  [Setting("Show when an article was updated", Group = "Help centre", Hint = "The date its current version was published, under its title.")]
+  bool ShowUpdated = true;
+  [Setting("Suggestions while typing", Group = "Help centre", Hint = "How many articles are offered as a person writes to you. Zero offers none.")]
+  int Suggestions = 3;
+
+  invariant Suggestions >= 0 && Suggestions <= 8 message "Offer between none and 8 suggestions.";
+
+  security {
+    // Read by every reader of the help centre — how many suggestions, whether dates show; nothing personal is in it.
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update when ManagesKnowledge;
+  }
+}
+
+/// The settings as they are now — the row's, or the defaults when nobody has opened the page.
+public class KnowledgeRules {
+  public bool RequireReview = true;
+  public bool ShowUpdated = true;
+  public int Suggestions = 3;
+}
+
+/// The knowledge base settings in force.
+public KnowledgeRules KnowledgeRulesNow() {
+  var row = KnowledgeSettings.FirstOrDefault();
+  if (row == null) { return new KnowledgeRules(); }
+  return new KnowledgeRules { RequireReview = row.RequireReview, ShowUpdated = row.ShowUpdated,
+                              Suggestions = row.Suggestions };
+}

@@ -1,0 +1,18 @@
+// The producer's test project for Osysharp.KnowledgeBase — the documentation site of Lumen, a photo editor: its help
+// centre, read by anybody, and the desk its writers and editors keep it with. NOT a support desk on purpose: the kit
+// knows nothing of tickets or customers, and this app's readers are people who use a photo editor.
+app KnowledgeKitTests {
+  model "model/**/*.osy";
+  tests "**/*.test.osy";
+  use Osysharp.Identity@0;
+  use Osysharp.KnowledgeBase@0;
+  use Osysharp.MarkdownEditor@1;
+  use Osysharp.Seo@0;
+  use Osysharp.Workflow;
+  use Osysharp.Memory;
+  // A deterministic embedder, so a test can search by meaning (`TestEmbedder.Use`).
+  use Osysharp.Memory.Testing@0;
+  use Osysharp.Ui;
+  // "Who changed this and when" on the settings page.
+  use Osysharp.Observability;
+}

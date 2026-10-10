@@ -1,0 +1,106 @@
+// FINDING AN ANSWER BEFORE ASKING — two pieces an app puts where people ask for help: a field that offers articles as a
+// person types what is wrong (a contact form's subject), and a small search for somewhere cramped (a chat panel).
+//
+// ⚑ BOTH ARE FOR THE PUBLIC. They search with `includeTeam: false`, so a team article is never offered, whoever is
+//   typing — a member of the team trying the contact form sees exactly what a customer does.
+namespace Osysharp.KnowledgeBase;
+
+using Osysharp.Ui;
+
+/// A labelled field that offers articles as a person types in it — the subject of a contact form, under which the
+/// articles that might answer it appear. It binds `value` exactly as `Field` does; it asks once the person pauses, and
+/// shows nothing until something matches, so a form with nothing to offer looks exactly as it did. An article opens
+/// over the form, so what they wrote is still there when they close it. As many as the settings say (none: a plain
+/// field).
+[Composable]
+[AllowAnonymous]
+public component KnowledgeSuggestingField(string label, Binding<string> value, string placeholder = "", string hint = "",
+                                          string error = "", string heading = "These articles might answer it") {
+  List<KnowledgeHit> hits = [];
+  string asked = "";
+  KnowledgeArticleView? reading = null;
+  action Ask() {
+    var now = value;
+    if (now.Trim() == asked.Trim()) { return; }
+    var found = SuggestKnowledge(now);
+    // A reply for words the person has already typed past is dropped.
+    if (now == value) { hits = found; asked = now; }
+  }
+  action Read(string slug) { reading = KnowledgeArticleView(slug); }
+  action Close() { reading = null; }
+  render {
+    Stack(gap: 2, w: "100%") {
+      Stack(gap: 1) {
+        if (label != "") { Text(label, labelFor: box, fontSize: FontSize.Label, fontWeight: FontWeight.Medium, color: Colors.TextMuted); }
+        Input(value: value, id: box, describedBy: note, placeholder: placeholder, label: label, invalid: error != "",
+              onInput: Ask, debounce: 350, textOverflow: TextOverflow.Ellipsis, w: "100%");
+        if (error != "" || hint != "") {
+          Text(error != "" ? error : hint, id: note, fontSize: FontSize.Caption, color: error != "" ? Colors.Danger : Colors.TextMuted);
+        }
+      }
+      if (hits.Count > 0 && value.Trim() != "") {
+        Stack(gap: 2, p: 3, rounded: Radius.Md, bg: Colors.Primary.Subtle, label: heading, animation: KitArrive) {
+          Row(gap: 2, align: Align.Center) {
+            Icon(Icons.Info, size: 14, color: Colors.Primary);
+            Text(heading, fontSize: FontSize.Label, fontWeight: FontWeight.Semibold, color: Colors.Primary.Strong);
+          }
+          Stack(gap: 1, role: UiRole.List) {
+            foreach (var h in hits) {
+              Box(role: UiRole.ListItem) {
+                Pressable(onClick: () => Read(h.Slug), label: h.Title, bg: Colors.Transparent, p: 0, textAlign: TextAlign.Start,
+                          cursor: Cursor.Pointer, w: "100%") {
+                  Stack(gap: 0, py: 1) {
+                    Text(h.Title, fontWeight: FontWeight.Medium, color: Colors.Primary.Strong, textDecoration: TextDecoration.Underline);
+                    if (h.Summary != "") { Text(h.Summary, fontSize: FontSize.Caption, color: Colors.TextMuted); }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      if (reading != null) {
+        Dialog(reading!.Title, onDismiss: Close, subtitle: reading!.Summary) {
+          // A long article scrolls inside the dialog, so its buttons stay in reach.
+          Box(maxH: "60vh", overflowY: Overflow.Auto, w: "100%") { KnowledgeArticleBody(reading!); }
+          slot actions {
+            Link(href: reading!.Href, color: Colors.Primary, fontSize: FontSize.Label) { Text("Open in the help centre"); }
+            Button("Back to your message", onPress: Close, tone: Tone.Primary);
+          }
+        }
+      }
+    }
+  }
+}
+
+/// A small search for somewhere cramped — a chat panel, a sidebar: a field, and the articles it finds right under it,
+/// as the person types. `take`: how many. With nothing found it says so and points to `fallback` ("ask us below").
+[Composable]
+[AllowAnonymous]
+public component KnowledgeQuickSearch(int take = 4, string label = "Search our help articles",
+                                      string fallback = "Nothing found — write to us and a person answers.") {
+  string q = "";
+  string asked = "";
+  List<KnowledgeHit> hits = [];
+  bool searched = false;
+  action Ask() {
+    var now = q;
+    if (KnowledgeWords(now).Count == 0) { hits = []; searched = false; asked = ""; return; }
+    if (now.Trim() == asked.Trim()) { return; }
+    var found = SearchKnowledge(now, includeTeam: false, take: take).Hits;
+    if (now == q) { hits = found; asked = now; searched = true; }
+  }
+  render {
+    Stack(gap: 2, w: "100%", role: UiRole.Search, label: label) {
+      Stack(gap: 1) {
+        Text(label, labelFor: box, fontSize: FontSize.Label, fontWeight: FontWeight.Medium, color: Colors.TextMuted);
+        Input(value: q, id: box, type: "search", placeholder: "A few words about it", label: label, onInput: Ask,
+              onEnter: Ask, debounce: 300, w: "100%");
+      }
+      if (hits.Count > 0) { KnowledgeHitList(hits, compact: true); }
+      if (searched && hits.Count == 0) {
+        Text(fallback, fontSize: FontSize.Label, color: Colors.TextMuted, animation: KitArrive);
+      }
+    }
+  }
+}

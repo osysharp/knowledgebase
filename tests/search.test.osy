@@ -1,0 +1,112 @@
+// Search and suggestions: every word, then any word when no article has them all; each article once, the best first;
+// suggestions as a person types, as many as the settings say; nothing for an empty question.
+using Osysharp.Identity;
+using Osysharp.KnowledgeBase;
+using Osysharp.Memory.Testing;
+using KnowledgeKitTests;
+
+[Test(Lumen)]
+void a_search_finds_every_word_first_and_loosens_when_nothing_has_them_all() {
+  Published("installing", "Install Lumen on a Mac", "Open the disk image and drag Lumen to Applications.",
+            summary: "From the download to the first photo.");
+  Published("installing", "Install Lumen on Windows", "Run the installer and follow its steps.");
+  Published("colour", "White balance", "Pick a neutral grey with the dropper.");
+  var both = SearchKnowledge("install windows");
+  Assert.Equal(["Install Lumen on Windows"], both.Hits.Select(h => h.Title).ToList());
+  Assert.False(both.Loosened);
+  // No article has "install" and "dropper" together: any of them, and the results say so.
+  var loose = SearchKnowledge("install dropper");
+  Assert.True(loose.Loosened);
+  Assert.Equal(3, loose.Hits.Count);
+  // A snippet from around the match.
+  var mac = SearchKnowledge("disk image").Hits.Single();
+  Assert.Contains("disk image", mac.Snippet);
+  Assert.Equal("Getting started", mac.Category);
+  Assert.Equal("Installing", mac.Section);
+  // Nothing to search for, nothing found — and punctuation is never an operator.
+  Assert.Equal(0, SearchKnowledge("   ").Hits.Count);
+  Assert.Equal(0, SearchKnowledge("\"-\" ! ?").Hits.Count);
+  Assert.Equal(0, SearchKnowledge("telescope").Hits.Count);
+}
+
+[Test(Lumen)]
+void suggestions_follow_what_a_person_writes_as_many_as_the_settings_say() {
+  Published("installing", "Install Lumen on a Mac", "Open the disk image and drag Lumen to Applications.");
+  Published("installing", "Install Lumen on Windows", "Run the installer and follow its steps.");
+  Published("colour", "White balance", "Pick a neutral grey with the dropper.");
+  Published("presets", "Make a preset", "Save the look as a preset.");
+  var offered = SuggestKnowledge("Lumen will not install on my new laptop");
+  Assert.Equal(2, offered.Count);
+  Assert.True(offered.All(h => h.Title.StartsWith("Install Lumen")));
+  Assert.Equal(0, SuggestKnowledge("").Count);
+  runas (Owen) { new KnowledgeSettings { Suggestions = 1 }; UnitOfWork.Commit(); }
+  Assert.Equal(1, SuggestKnowledge("Lumen will not install on my new laptop").Count);
+  runas (Owen) { KnowledgeSettings.Single().Suggestions = 0; UnitOfWork.Commit(); }
+  Assert.Equal(0, SuggestKnowledge("Lumen will not install on my new laptop").Count);
+  runas (Owen) {
+    KnowledgeSettings.Single().Suggestions = 12;
+    Assert.Throws<ValidationException>(() => UnitOfWork.Commit());
+  }
+}
+
+[Test(Lumen)]
+void the_front_page_lists_what_was_updated_last() {
+  Published("installing", "Install Lumen on a Mac", "Drag it to Applications.");
+  Published("colour", "White balance", "Use the dropper.");
+  var recent = KnowledgeRecent();
+  Assert.Equal(["White balance", "Install Lumen on a Mac"], recent.Select(l => l.Title).ToList());
+}
+
+// ── in the reader's language ───────────────────────────────────────────────────────────────────────────────────────
+
+[Test(Lumen)]
+void a_swedish_reader_finds_an_article_by_another_form_of_its_words() {
+  var slug = Published("your-account", "Paying by card", "Card payments are taken on the day you buy.");
+  Translated(slug, "sv", "Betala med kort", "Betalningar med kort dras samma dag som du köper.");
+  Session.SetLanguage("sv");
+  // "betalningen" (the payment) is in no article — "betalningar" (payments) is.
+  var found = SearchKnowledge("betalningen");
+  Assert.Equal(["Betala med kort"], found.Hits.Select(h => h.Title).ToList());
+  Assert.Contains("Betalningar", found.Hits[0].Snippet);
+}
+
+[Test(Lumen)]
+void an_arabic_reader_finds_an_article_by_another_form_of_its_words() {
+  var slug = Published("your-account", "Paying by card", "We take every credit card.");
+  Translated(slug, "ar", "الدفع بالبطاقة", "نقبل جميع البطاقات الائتمانية.");
+  Session.SetLanguage("ar");
+  // "بطاقتي" (my card) is in no article — "البطاقات" (the cards) is.
+  Assert.Equal(["الدفع بالبطاقة"], SearchKnowledge("بطاقتي").Hits.Select(h => h.Title).ToList());
+}
+
+// ── by meaning ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+[Test(Lumen)]
+void an_article_is_found_by_meaning_and_leaves_that_index_when_archived() {
+  TestEmbedder.Use(new WordsEmbedder());
+  var slug = Published("colour", "White balance", "Pick a neutral grey with the dropper to remove a colour cast.");
+  Published("presets", "Make a preset", "Save the look as a preset.");
+  Assert.Equal(["White balance"], KnowledgeByMeaning("remove colour cast neutral grey dropper").Hits.Select(h => h.Title).ToList());
+  runas (Eda) { ArchiveKnowledge(KnowledgeArticle.Single(a => a.Slug == slug), "Replaced by the colour guide."); }
+  Background.Settle();
+  Assert.Equal(0, KnowledgeByMeaning("remove colour cast neutral grey dropper").Hits.Count(h => h.Title == "White balance"));
+}
+
+[Test(Lumen)]
+void a_team_article_is_never_in_a_customer_search_even_by_meaning() {
+  TestEmbedder.Use(new WordsEmbedder());
+  Published("refunds", "Refund a cancelled subscription", "Refund the last payment of a cancelled subscription in full.");
+  Published("your-account", "Cancel a subscription", "Cancel a subscription and the last payment is refunded in full; a cancelled subscription ends at once.");
+  // The editor can read the playbook — and still, a search for customers (`includeTeam: false`) never offers it.
+  runas (Eda) {
+    var forCustomers = KnowledgeByMeaning("refund the last payment of a cancelled subscription");
+    Assert.Equal(0, forCustomers.Hits.Count(h => h.TeamOnly));
+    Assert.Equal(1, forCustomers.Hits.Count(h => h.Title == "Cancel a subscription"));
+    // The control: the team's own search finds it.
+    Assert.Equal(1, KnowledgeByMeaning("refund the last payment of a cancelled subscription", includeTeam: true).Hits.Count(h => h.TeamOnly));
+  }
+  // A photographer asking for the team's articles gets none — she cannot read them at all.
+  runas (Pia) {
+    Assert.Equal(0, KnowledgeByMeaning("refund the last payment of a cancelled subscription", includeTeam: true).Hits.Count(h => h.TeamOnly));
+  }
+}

@@ -1,0 +1,232 @@
+// Writing and review: a draft is the writer's until it is sent; a reviewer who did not write it publishes it or sends it
+// back with what to change; a published version is frozen and the next one is a new draft; nothing is published by
+// editing it; and the steps are a trail the team reads.
+using Osysharp.Identity;
+using Osysharp.KnowledgeBase;
+using KnowledgeKitTests;
+
+[Test(Lumen)]
+void a_draft_is_written_sent_for_review_and_published_by_a_reviewer() {
+  var slug = "";
+  runas (Wren) {
+    var draft = NewKnowledgeArticle(KnowledgeSection.Single(s => s.Slug == "installing"), "Install Lumen on a Mac");
+    draft.Summary = "From the download to the first photo.";
+    draft.Body = "# Install Lumen\n\nOpen the disk image and drag Lumen to Applications.";
+    UnitOfWork.Commit();
+    slug = draft.Article.Slug;
+    Assert.Equal("install-lumen-on-a-mac", slug);
+    SendKnowledgeForReview(draft, "First go — the screenshots come later.");
+  }
+  Background.Settle();
+  Assert.Equal(["en 1 InReview"], StagesOf(slug));
+  Assert.Equal(["review: install-lumen-on-a-mac"], Told());
+  // Not published, so a photographer reads nothing of it.
+  runas (Pia) { Assert.False(KnowledgeArticleView(slug).Found); }
+  runas (Eda) { PublishKnowledge(VersionOf(slug, "en", KnowledgeStage.InReview)); }
+  Background.Settle();
+  Assert.Equal(["en 1 Published"], StagesOf(slug));
+  runas (Pia) {
+    var view = KnowledgeArticleView(slug);
+    Assert.True(view.Found);
+    Assert.Equal("Install Lumen on a Mac", view.Title);
+    Assert.Contains("drag Lumen to Applications", view.Body);
+  }
+  Assert.Equal(["review: install-lumen-on-a-mac", "published: install-lumen-on-a-mac en v1"], Told());
+}
+
+[Test(Lumen)]
+void a_reviewer_sends_a_version_back_saying_what_to_change() {
+  var slug = "";
+  runas (Wren) {
+    var draft = NewKnowledgeArticle(KnowledgeSection.Single(s => s.Slug == "colour"), "White balance");
+    draft.Body = "Use the dropper.";
+    UnitOfWork.Commit();
+    slug = draft.Article.Slug;
+    SendKnowledgeForReview(draft);
+  }
+  Background.Settle();
+  runas (Eda) {
+    var ex = Assert.Throws<ValidationException>(() => SendKnowledgeBack(VersionOf(slug, "en", KnowledgeStage.InReview), " "));
+    Assert.Equal("Say what to change — the writer reads it.", ex.Message);
+    SendKnowledgeBack(VersionOf(slug, "en", KnowledgeStage.InReview), "Say where the dropper is.");
+  }
+  Background.Settle();
+  Assert.Equal(["en 1 Draft"], StagesOf(slug));
+  Assert.Equal("sent back: white-balance — Say where the dropper is.", Told().Last());
+  // Back with Wren: she goes on writing the same version, and sends it again.
+  runas (Wren) {
+    var draft = KnowledgeDraft(KnowledgeArticle.Single(a => a.Slug == slug));
+    Assert.Equal(1, draft.Number);
+    draft.Body = "The dropper is above the temperature slider.";
+    UnitOfWork.Commit();
+    SendKnowledgeForReview(draft);
+  }
+  Background.Settle();
+  Assert.Equal(["en 1 InReview"], StagesOf(slug));
+}
+
+// SECURITY-INVARIANT(knowledge-published-only-by-a-reviewer-step)
+[Test(Lumen)]
+void a_draft_is_never_published_by_an_edit() {
+  var slug = "";
+  runas (Wren) {
+    var draft = NewKnowledgeArticle(KnowledgeSection.Single(s => s.Slug == "presets"), "Make a preset");
+    draft.Body = "Save the look as a preset.";
+    UnitOfWork.Commit();
+    slug = draft.Article.Slug;
+    // A writer cannot publish by writing the stage, the date, or a step that is not theirs to take.
+    Assert.Denied(() => draft.Stage = KnowledgeStage.Published);
+    Assert.Denied(() => draft.PublishedAt = DateTime.UtcNow);
+    Assert.Denied(() => draft.Article.FirstPublishedAt = DateTime.UtcNow);
+    var me = Person.Single(p => p.Email == "wren@lumen.test");
+    Assert.Denied(() => new KnowledgeStep { Article = draft.Article, Revision = draft, Kind = KnowledgeStepKind.Publish, By = me,
+                                            At = DateTime.UtcNow });
+    // …nor a version born published.
+    Assert.Denied(() => new KnowledgeRevision { Article = draft.Article, Language = "en", Number = 9, Title = "x",
+                                                Stage = KnowledgeStage.Published });
+  }
+  // An editor cannot either: a step names who takes it, and the stage is the steps' alone.
+  runas (Eda) {
+    var draft = VersionOf(slug, "en", KnowledgeStage.Draft);
+    Assert.Denied(() => draft.Stage = KnowledgeStage.Published);
+    var wren = Person.Single(p => p.Email == "wren@lumen.test");
+    Assert.Denied(() => new KnowledgeStep { Article = draft.Article, Revision = draft, Kind = KnowledgeStepKind.Publish, By = wren,
+                                            At = DateTime.UtcNow });
+  }
+  Background.Settle();
+  Assert.Equal(["en 1 Draft"], StagesOf(slug));
+  runas (Pia) { Assert.False(KnowledgeArticleView(slug).Found); }
+}
+
+// SECURITY-INVARIANT(knowledge-published-only-by-a-reviewer-step) — the four-eyes half.
+[Test(Lumen)]
+void while_review_is_on_nobody_publishes_their_own_words() {
+  var slug = "";
+  runas (Eda) {
+    // Eda writes one herself…
+    var draft = NewKnowledgeArticle(KnowledgeSection.Single(s => s.Slug == "presets"), "Share a preset");
+    draft.Body = "Export it as a .lumenpreset file.";
+    UnitOfWork.Commit();
+    slug = draft.Article.Slug;
+    SendKnowledgeForReview(draft);
+  }
+  Background.Settle();
+  runas (Eda) {
+    var mine = VersionOf(slug, "en", KnowledgeStage.InReview);
+    var ex = Assert.Throws<ValidationException>(() => PublishKnowledge(mine));
+    Assert.Equal("Somebody else reviews what you wrote.", ex.Message);
+    // …and a step made by hand, past the function, is refused when it is applied.
+    var me = Person.Single(p => p.Email == "eda@lumen.test");
+    new KnowledgeStep { Article = mine.Article, Revision = mine, Kind = KnowledgeStepKind.Publish, By = me, At = DateTime.UtcNow };
+    UnitOfWork.Commit();
+  }
+  Background.Settle();
+  Assert.Equal(["en 1 InReview"], StagesOf(slug));
+  Assert.Equal("Somebody else reviews what you wrote.", RefusedBecause(slug));
+  // Owen, who did not write it, publishes it.
+  runas (Owen) { PublishKnowledge(VersionOf(slug, "en", KnowledgeStage.InReview)); }
+  Background.Settle();
+  Assert.Equal(["en 1 Published"], StagesOf(slug));
+}
+
+[Test(Lumen)]
+void with_review_off_a_reviewer_publishes_a_draft_of_their_own() {
+  runas (Owen) { new KnowledgeSettings { RequireReview = false }; UnitOfWork.Commit(); }
+  var slug = "";
+  runas (Eda) {
+    var draft = NewKnowledgeArticle(KnowledgeSection.Single(s => s.Slug == "presets"), "Delete a preset");
+    draft.Body = "Right-click it and choose Delete.";
+    UnitOfWork.Commit();
+    slug = draft.Article.Slug;
+    PublishKnowledge(draft);
+  }
+  Background.Settle();
+  Assert.Equal(["en 1 Published"], StagesOf(slug));
+  // A writer still cannot: publishing is a reviewer's step.
+  runas (Wren) {
+    var draft = NewKnowledgeArticle(KnowledgeSection.Single(s => s.Slug == "presets"), "Rename a preset");
+    draft.Body = "Double-click its name.";
+    UnitOfWork.Commit();
+    Assert.Denied(() => PublishKnowledge(draft));
+  }
+}
+
+[Test(Lumen)]
+void a_published_version_is_frozen_and_the_next_one_is_a_new_draft() {
+  var slug = Published("installing", "Install Lumen on Windows", "Run the installer.");
+  runas (Wren) {
+    var v1 = VersionOf(slug, "en", KnowledgeStage.Published);
+    Assert.Denied(() => v1.Title = "Changed");
+    Assert.Denied(() => v1.Body = "Changed");
+    var next = KnowledgeDraft(v1.Article);
+    Assert.Equal(2, next.Number);
+    Assert.Equal("Run the installer.", BodyOf(next));
+    next.Body = "Run the installer, then restart.";
+    next.ChangeNote = "Restart after installing.";
+    UnitOfWork.Commit();
+    // Asked again, the same draft — one at a time per language.
+    Assert.Equal(next.Id, KnowledgeDraft(v1.Article).Id);
+  }
+  // Readers still read version 1 while version 2 is written.
+  runas (Pia) { Assert.Equal("Run the installer.", KnowledgeArticleView(slug).Body); }
+  runas (Wren) { SendKnowledgeForReview(VersionOf(slug, "en", KnowledgeStage.Draft)); }
+  Background.Settle();
+  runas (Eda) { PublishKnowledge(VersionOf(slug, "en", KnowledgeStage.InReview)); }
+  Background.Settle();
+  Assert.Equal(["en 1 Superseded", "en 2 Published"], StagesOf(slug));
+  runas (Pia) { Assert.Equal("Run the installer, then restart.", KnowledgeArticleView(slug).Body); }
+  // An earlier version comes back as a new draft.
+  runas (Wren) {
+    var back = KnowledgeDraftFrom(VersionOf(slug, "en", KnowledgeStage.Superseded));
+    Assert.Equal(3, back.Number);
+    Assert.Equal("Back to version 1", back.ChangeNote);
+    Assert.Equal("Run the installer.", BodyOf(back));
+  }
+}
+
+[Test(Lumen)]
+void an_archived_article_is_read_by_nobody_outside_the_team_and_comes_back() {
+  var slug = Published("installing", "Install Lumen on Linux", "Use the AppImage.");
+  runas (Wren) { Assert.Denied(() => ArchiveKnowledge(KnowledgeArticle.Single(a => a.Slug == slug))); }
+  runas (Eda) { ArchiveKnowledge(KnowledgeArticle.Single(a => a.Slug == slug), "We no longer build for Linux."); }
+  Background.Settle();
+  runas (Pia) {
+    Assert.False(KnowledgeArticleView(slug).Found);
+    Assert.Equal(0, SearchKnowledge("AppImage").Hits.Count);
+    Assert.Equal(0, KnowledgeRevision.Count());
+  }
+  runas (Eda) { RestoreKnowledge(KnowledgeArticle.Single(a => a.Slug == slug)); }
+  Background.Settle();
+  runas (Pia) { Assert.True(KnowledgeArticleView(slug).Found); }
+  Assert.Equal(["archived: " + slug, "restored: " + slug], Told().Where(t => t.StartsWith("archived") || t.StartsWith("restored")).ToList());
+}
+
+[Test(Lumen)]
+void a_draft_never_sent_can_be_thrown_away_and_its_article_with_it() {
+  var slug = "";
+  runas (Wren) {
+    var draft = NewKnowledgeArticle(KnowledgeSection.Single(s => s.Slug == "colour"), "Colour grading");
+    slug = draft.Article.Slug;
+    DiscardKnowledgeDraft(draft);
+    Assert.Equal(0, KnowledgeArticle.Count(a => a.Slug == slug));
+  }
+  // A published article keeps its history: its versions cannot be thrown away, nor the article deleted.
+  var kept = Published("colour", "Colour grading", "Start with the tone curve.");
+  runas (Wren) {
+    var v1 = VersionOf(kept, "en", KnowledgeStage.Published);
+    Assert.Throws<ValidationException>(() => DiscardKnowledgeDraft(v1));
+    Assert.Denied(() => v1.Delete());
+    Assert.Denied(() => v1.Article.Delete());
+  }
+}
+
+[Test(Lumen)]
+void a_photographer_writes_nothing_and_reads_no_draft_or_step() {
+  var slug = Published("installing", "Update Lumen", "Choose Check for updates.");
+  runas (Wren) { KnowledgeDraft(KnowledgeArticle.Single(a => a.Slug == slug)); }
+  runas (Pia) {
+    Assert.Equal(1, KnowledgeRevision.Count());
+    Assert.Equal(0, KnowledgeStep.Count());
+    Assert.Denied(() => NewKnowledgeArticle(KnowledgeSection.Single(s => s.Slug == "installing"), "Mine"));
+  }
+}

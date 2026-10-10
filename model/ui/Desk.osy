@@ -1,0 +1,774 @@
+// THE TEAM'S DESK — where articles are written, reviewed and published: the list of every article and how each of its
+// languages stands, an article's page (its draft in the editor, its review, its versions and its trail), the queue of
+// versions waiting for a reviewer, and the categories and sections.
+//
+// Everything is read LIVE, so a step applied after its commit — sent for review, published, sent back — shows the moment
+// it is. The pages are the kit's, and they stand in the app's own working shell (`[Layout(WorkspaceFrame)]` — the app's
+// design of `WorkspaceShell`, its top bar and its rail), with the knowledge base in the app's navigation (`[Nav]`,
+// `Nav.Pages()`): an app writes nothing to have them in its desk. To tailor one, take it over by name.
+namespace Osysharp.KnowledgeBase;
+
+using Osysharp.Ui;
+using Osysharp.MarkdownEditor;
+
+// ── the pages ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Every article.
+[Route("/knowledge")] [Layout(WorkspaceFrame)] [Authorize(WritesKnowledge)] [Render(CSR)] [Title("Knowledge base")]
+[Nav("Knowledge base", Icon = Icons.File, Order = 50)]
+public component KnowledgeDeskPage() { render { KnowledgeDesk(); } }
+
+/// One article — its original language.
+[Route("/knowledge/a/{id}")] [Layout(WorkspaceFrame)] [Authorize(WritesKnowledge)] [Render(CSR)] [Title("Article")]
+public component KnowledgeArticleDeskPage(Guid id) { render { KnowledgeArticleDesk(id, ""); } }
+
+/// One article, in one of its languages.
+[Route("/knowledge/a/{id}/{language}")] [Layout(WorkspaceFrame)] [Authorize(WritesKnowledge)] [Render(CSR)] [Title("Article")]
+[Opens(KnowledgeRevision, id = Article.Id)]
+public component KnowledgeArticleLanguagePage(Guid id, string language) { render { KnowledgeArticleDesk(id, language); } }
+
+/// The versions waiting for a reviewer.
+[Route("/knowledge/review")] [Layout(WorkspaceFrame)] [Authorize(WritesKnowledge)] [Render(CSR)] [Title("Waiting for review")]
+public component KnowledgeReviewPage() { render { KnowledgeReviewQueue(); } }
+
+/// The categories and sections.
+[Route("/knowledge/categories")] [Layout(WorkspaceFrame)] [Authorize(ManagesKnowledge)] [Render(CSR)] [Title("Categories")]
+public component KnowledgeCategoriesPage() { render { KnowledgeShelvesDesk(); } }
+
+// ── every article ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The list of every article — what is being written, what waits for review, what readers read, what is archived —
+/// with how each language stands, and a way to start a new one.
+[Composable]
+public component KnowledgeDesk() {
+  string desk = "";
+  KnowledgeDeskList list = KnowledgeDeskList.All;
+  string find = "";
+  bool starting = false;
+  // How many articles the list reads — the window. "Show more" widens it; a new list or search starts it again.
+  int limit = KnowledgeDeskWindow();
+  // ⚑ A WINDOW, NOT THE KNOWLEDGE BASE. The database filters, orders, counts and pages the list: a page open reads the
+  //   articles it shows and their versions, however many the knowledge base holds.
+  live var looking = find.Trim().ToLower();
+  // One more than the window is read, so the list knows whether there is more without counting.
+  live var articles = KnowledgeArticle
+    .Where(a => list == KnowledgeDeskList.All
+             || (list == KnowledgeDeskList.Archived && a.ArchivedAt != null)
+             || (list == KnowledgeDeskList.Drafts && a.Revisions.Any(r => r.Stage == KnowledgeStage.Draft))
+             || (list == KnowledgeDeskList.InReview && a.Revisions.Any(r => r.Stage == KnowledgeStage.InReview))
+             || (list == KnowledgeDeskList.Published && a.ArchivedAt == null
+                 && a.Revisions.Any(r => r.Stage == KnowledgeStage.Published)))
+    .Where(a => looking == "" || a.Slug.Contains(looking) || a.Revisions.Any(r => r.Title.ToLower().Contains(looking)))
+    .OrderByDescending(a => a.Revisions.Max(r => r.PublishedAt ?? r.SubmittedAt ?? r.CreatedAt))
+    .ThenBy(a => a.Slug)
+    .Take(limit + 1)
+    .Select(a => new KnowledgeArticleHead {
+      Id = a.Id, Slug = a.Slug, Language = a.Language, Audience = a.Audience,
+      CategoryTeamOnly = a.Section.Category.Audience == KnowledgeAudience.Team, Section = a.Section.Id,
+      SectionName = a.Section.Name, CategoryName = a.Section.Category.Name, Archived = a.ArchivedAt != null,
+      EverPublished = a.FirstPublishedAt != null }).ToList();
+  live var everything = KnowledgeArticle.Count();
+  live var waiting = KnowledgeRevision.Count(r => r.Stage == KnowledgeStage.InReview);
+  live var shownIds = articles.Select(a => a.Id).ToList();
+  live var versions = KnowledgeRevision.Where(r => shownIds.Contains(r.Article.Id)).Select(r => new KnowledgeVersionHead {
+      Id = r.Id, Article = r.Article.Id, Language = r.Language, Number = r.Number, Stage = r.Stage, Title = r.Title,
+      Summary = r.Summary, ChangeNote = r.ChangeNote, Created = r.CreatedAt, SubmittedAt = r.SubmittedAt,
+      PublishedAt = r.PublishedAt }).ToList();
+  live var sections = KnowledgeSection.OrderBy(s => s.Category.Position).ThenBy(s => s.Category.Name).ThenBy(s => s.Position)
+    .Select(s => new KnowledgeSectionChoice { Id = s.Id, Label = s.Category.Name + " › " + s.Name,
+                                              TeamOnly = s.Category.Audience == KnowledgeAudience.Team }).ToList();
+  live var manages = ManagesKnowledge;
+  on mount { desk = KnowledgeDeskPath(); }
+  action Show(KnowledgeDeskList l) { list = l; limit = KnowledgeDeskWindow(); }
+  action ShowMore() { limit = limit + KnowledgeDeskWindow(); }
+  action Start() { starting = true; }
+  action Stop() { starting = false; }
+  render {
+    var shown = articles.Take(limit).ToList();
+    Stack(gap: 5, w: "100%", maxW: "1080px", mx: "auto") {
+      Row(gap: 3, align: Align.End, justify: Justify.Between, wrap: Wrapping.Wrap) {
+        PageHead("Knowledge base", subtitle: "The help centre's articles — written, reviewed and published here.");
+        Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+          if (manages) { TextLink("Categories", desk + "/categories"); }
+          Button("New article", onPress: Start, tone: Tone.Primary, disabled: sections.Count == 0);
+        }
+      }
+      if (waiting > 0) {
+        Link(href: desk + "/review", textDecoration: TextDecoration.None) {
+          Row(gap: 2, p: 3, rounded: Radius.Md, bg: Colors.Warning.Subtle, align: Align.Center) {
+            Icon(Icons.Hourglass, size: 16, color: Colors.Warning);
+            Text(waiting == 1 ? "1 version is waiting for a review" : $"{waiting} versions are waiting for a review",
+                 fontWeight: FontWeight.Medium, color: Colors.OnSurface);
+          }
+        }
+      }
+      Row(gap: 3, align: Align.End, justify: Justify.Between, wrap: Wrapping.Wrap) {
+        Tabs() {
+          foreach (var l in [KnowledgeDeskList.All, KnowledgeDeskList.Drafts, KnowledgeDeskList.InReview, KnowledgeDeskList.Published,
+                             KnowledgeDeskList.Archived]) {
+            Tab(l.Label, selected: list == l, onPress: () => Show(l));
+          }
+        }
+        Box(minW: "240px") { Field("Find an article", value: find, type: "search", placeholder: "Its title"); }
+      }
+      if (sections.Count == 0) {
+        EmptyState("Make a place for articles first",
+                   body: manages ? "An article lives in a section of a category. Add a category and a section, then write."
+                                 : "An article lives in a section of a category, and there are none yet — ask whoever arranges the help centre.");
+      } else {
+        if (shown.Count == 0) {
+          EmptyState(everything == 0 ? "No articles yet" : "Nothing here",
+                     body: everything == 0 ? "Start with the answer you give most often — it is the one most people need."
+                                               : (find.Trim() != "" ? "No article's title has those words." : "No article is in this list right now."));
+        } else {
+          Stack(gap: 0, role: UiRole.List, label: "Articles", rounded: Radius.Lg, border: Colors.Border, borderW: 1, bg: Colors.Surface,
+                overflow: Overflow.Hidden) {
+            foreach (var a in shown) {
+              KnowledgeDeskLine(a, KnowledgeShownVersion(a, versions),
+                                KnowledgeLanguagesOf(versions.Where(v => v.Article == a.Id).ToList(), App.Languages),
+                                desk + "/a/" + a.Id.ToString());
+            }
+          }
+          // The window ends before the list does: the next articles are read only when somebody asks for them.
+          if (articles.Count > shown.Count) {
+            Row(justify: Justify.Center, py: 2) {
+              Button("Show more", onPress: ShowMore, tone: Tone.Ghost, size: Size.Sm);
+            }
+          }
+        }
+      }
+    }
+    if (starting) { KnowledgeStartDialog(sections, desk, Stop); }
+  }
+}
+
+/// One article in the desk's list.
+[Composable]
+public component KnowledgeDeskLine(KnowledgeArticleHead a, KnowledgeVersionHead? shown, List<KnowledgeLanguageState> languages, string href) {
+  render {
+    Box(role: UiRole.ListItem, borderBW: 1, border: Colors.Border) {
+      Link(href: href, label: shown == null ? a.Slug : shown!.Title, color: Colors.OnSurface, textDecoration: TextDecoration.None) {
+        Row(gap: 4, px: 4, py: 3, align: Align.Center, justify: Justify.Between, wrap: Wrapping.Wrap) {
+          Stack(gap: 1, minW: "0", grow: 1) {
+            Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+              Text(shown == null ? a.Slug : shown!.Title, fontWeight: FontWeight.Semibold);
+              if (a.Audience == KnowledgeAudience.Team || a.CategoryTeamOnly) { Badge("Team only", tone: Tone.Warning); }
+              if (a.Archived) { Badge("Archived", tone: Tone.Ghost); }
+            }
+            Text(a.CategoryName + " › " + a.SectionName, fontSize: FontSize.Caption, color: Colors.TextMuted);
+          }
+          Row(gap: 1, align: Align.Center, wrap: Wrapping.Wrap, label: "Languages") {
+            foreach (var l in languages) { KnowledgeLanguageChip(l); }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// A language's tab on an article's page — its code, whether it is the original, and where its newest version stands —
+/// each a whole phrase, so every language can word it.
+public string KnowledgeTabLabel(KnowledgeLanguageState l, bool original) {
+  var code = l.Language.ToUpper();
+  if (original) {
+    if (l.InReview) { return $"{code} · original · in review"; }
+    if (l.Draft) { return $"{code} · original · draft"; }
+    return $"{code} · original";
+  }
+  if (l.InReview) { return $"{code} · in review"; }
+  if (l.Draft) { return $"{code} · draft"; }
+  if (l.Published) { return code; }
+  return $"{code} · not written";
+}
+
+/// How one language of an article stands, as a chip: "EN · Published", "SV · Draft", "AR —".
+[Composable]
+public component KnowledgeLanguageChip(KnowledgeLanguageState l) {
+  render {
+    if (l.InReview) { Badge(l.Language.ToUpper() + " · In review", tone: Tone.Warning); }
+    if (!l.InReview && l.Draft) { Badge(l.Language.ToUpper() + " · Draft", tone: Tone.Primary); }
+    if (!l.InReview && !l.Draft && l.Published) { Badge(l.Language.ToUpper() + " · Published", tone: Tone.Success); }
+    if (!l.InReview && !l.Draft && !l.Published) { Badge(l.Language.ToUpper() + " —", tone: Tone.Ghost); }
+  }
+}
+
+/// Start an article: its title, where it goes, and whether only the team reads it.
+[Composable]
+public component KnowledgeStartDialog(List<KnowledgeSectionChoice> sections, string desk, Action onDismiss) {
+  string title = "";
+  KnowledgeSectionChoice? into = null;
+  bool teamOnly = false;
+  string problem = "";
+  action Go() {
+    problem = "";
+    if (into == null) { problem = "Choose where it goes."; return; }
+    try { Navigation.Go(StartKnowledgeArticle(into!.Id, title, teamOnly)); } catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    Dialog("New article", onDismiss: onDismiss, subtitle: "It starts as a draft only the team reads.") {
+      Stack(gap: 4) {
+        Field("Title", value: title, placeholder: "What a reader is trying to do — “Reset your password”", onEnter: Go);
+        Dropdown("Where it goes", value: into, options: sections.ToArray(), placeholder: "A category's section") { s => Text(s.Label); }
+        Switch("Only the team reads it", value: teamOnly);
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      }
+      slot actions {
+        Button("Cancel", onPress: onDismiss, tone: Tone.Ghost);
+        Button("Start writing", onPress: Go, tone: Tone.Primary);
+      }
+    }
+  }
+}
+
+// ── one article ───────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// One article, in one language: its draft in the editor (or what readers read now), what can be done with it next,
+/// where it sits and who reads it, its versions and its trail. `language`: "" for its original.
+[Composable]
+public component KnowledgeArticleDesk(Guid article, string language) {
+  live var heads = KnowledgeArticle.Where(a => a.Id == article).Select(a => new KnowledgeArticleHead {
+      Id = a.Id, Slug = a.Slug, Language = a.Language, Audience = a.Audience,
+      CategoryTeamOnly = a.Section.Category.Audience == KnowledgeAudience.Team, Section = a.Section.Id,
+      SectionName = a.Section.Name, CategoryName = a.Section.Category.Name, Archived = a.ArchivedAt != null,
+      EverPublished = a.FirstPublishedAt != null }).ToList();
+  live var versions = KnowledgeRevision.Where(r => r.Article.Id == article).OrderByDescending(r => r.Number)
+    .Select(r => new KnowledgeVersionHead {
+      Id = r.Id, Article = r.Article.Id, Language = r.Language, Number = r.Number, Stage = r.Stage, Title = r.Title,
+      Summary = r.Summary, ChangeNote = r.ChangeNote, Author = r.Author == null ? Guid.Empty : r.Author.Id,
+      AuthorName = r.Author == null ? "" : r.Author.DisplayName, Created = r.CreatedAt, SubmittedAt = r.SubmittedAt,
+      PublishedAt = r.PublishedAt, PublishedBy = r.PublishedBy == null ? "" : r.PublishedBy.DisplayName }).ToList();
+  live var steps = KnowledgeStep.Where(s => s.Article.Id == article).OrderByDescending(s => s.At).Take(40)
+    .Select(s => new KnowledgeStepHead {
+      Id = s.Id, Kind = s.Kind, State = s.State, By = s.By == null ? "" : s.By.DisplayName, At = s.At, Note = s.Note ?? "",
+      Language = s.Revision == null ? "" : s.Revision.Language, Version = s.Revision == null ? 0 : s.Revision.Number,
+      Problem = s.Problem ?? "" }).ToList();
+  live var settings = KnowledgeSettings.Take(1).ToList();
+  live var reviews = ReviewsKnowledge;
+  live var me = Session.CurrentUser;
+  live var meId = me == null ? Guid.Empty : me.Id;
+  string desk = "";
+  string lang = language;
+  on mount { desk = KnowledgeDeskPath(); }
+  action Pick(string l) { lang = l; }
+  render {
+    if (heads.Count == 0) {
+      Stack(gap: 4, w: "100%", maxW: "1080px", mx: "auto") {
+        EmptyState("This article is not here", body: "It was thrown away, or it is not one you can read.");
+        TextLink("Back to the knowledge base", desk);
+      }
+    } else {
+      var a = heads[0];
+      var showing = lang == "" ? a.Language : lang;
+      var inLanguage = versions.Where(v => v.Language == showing).ToList();
+      var open = inLanguage.FirstOrDefault(v => v.Stage == KnowledgeStage.Draft || v.Stage == KnowledgeStage.InReview);
+      var live = inLanguage.FirstOrDefault(v => v.Stage == KnowledgeStage.Published);
+      var requireReview = settings.Count == 0 || settings[0].RequireReview;
+      Stack(gap: 5, w: "100%", maxW: "1180px", mx: "auto") {
+        Stack(gap: 2) {
+          TextLink("‹ Knowledge base", desk);
+          Row(gap: 3, align: Align.Center, wrap: Wrapping.Wrap) {
+            PageHead(open != null ? open!.Title : (live != null ? live!.Title : a.Slug), subtitle: a.CategoryName + " › " + a.SectionName);
+            if (a.Audience == KnowledgeAudience.Team || a.CategoryTeamOnly) { Badge("Team only", tone: Tone.Warning); }
+            if (a.Archived) { Badge("Archived", tone: Tone.Ghost); }
+          }
+        }
+        Row(gap: 1, align: Align.Center, wrap: Wrapping.Wrap) {
+          Tabs() {
+            foreach (var l in KnowledgeLanguagesOf(versions, App.Languages)) {
+              Tab(KnowledgeTabLabel(l, l.Language == a.Language),
+                  selected: l.Language == showing, onPress: () => Pick(l.Language));
+            }
+          }
+        }
+        // Two columns from a laptop's width up — the article, and beside it where it sits and what happened to it.
+        Box(display: Display.Grid, cols: Layout.AtLeast(Laptop) ? "minmax(0, 1fr) 320px" : "minmax(0, 1fr)", gap: 5, w: "100%") {
+          Stack(gap: 4, minW: "0") {
+            if (open != null) {
+              KnowledgeDraftPane(a, open!, live, open!.Author == meId, reviews, requireReview, steps);
+            } else {
+              if (live != null) {
+                KnowledgeLivePane(a, live!, showing);
+              } else {
+                KnowledgeNoVersionPane(a, showing);
+              }
+            }
+          }
+          Stack(gap: 4, minW: "0") {
+            KnowledgePlacePane(a);
+            KnowledgeHistoryPane(inLanguage, steps.Where(s => s.Language == showing || s.Language == "").ToList());
+          }
+        }
+      }
+    }
+  }
+}
+
+/// The version being written or reviewed: its title, line and words, and what can be done next.
+[Composable]
+public component KnowledgeDraftPane(KnowledgeArticleHead a, KnowledgeVersionHead open, KnowledgeVersionHead? live, bool mine,
+                                    bool reviews, bool requireReview, List<KnowledgeStepHead> steps) {
+  string title = open.Title;
+  string summary = open.Summary;
+  string note = open.ChangeNote;
+  string stepNote = "";
+  string problem = "";
+  string said = "";
+  bool comparing = false;
+  live var draft = open.Stage == KnowledgeStage.Draft;
+  live var changed = title != open.Title || summary != open.Summary || note != open.ChangeNote;
+  live var waiting = steps.Any(s => s.State == KnowledgeStepState.Waiting);
+  // Only the LATEST step's refusal is news — an older one was answered by whatever came after it.
+  live var latest = steps.FirstOrDefault();
+  live var refused = latest != null && latest!.State == KnowledgeStepState.Refused ? latest : null;
+  live var sentBack = steps.FirstOrDefault(s => s.Kind == KnowledgeStepKind.SendBack && s.State == KnowledgeStepState.Applied);
+  action Save() {
+    problem = ""; said = "";
+    try { SaveKnowledgeDraft(open.Id, title, summary, note); said = "Saved"; } catch (Exception ex) { problem = ex.Message; }
+  }
+  action Step(KnowledgeStepKind kind) {
+    problem = ""; said = "";
+    try {
+      if (draft && changed) { SaveKnowledgeDraft(open.Id, title, summary, note); }
+      KnowledgeDeskStep(a.Id, open.Id, kind, stepNote);
+      stepNote = "";
+    } catch (Exception ex) { problem = ex.Message; }
+  }
+  action Discard() {
+    problem = "";
+    try {
+      var next = DiscardKnowledgeVersion(open.Id);
+      if (next != "") { Navigation.Go(next); }
+    } catch (Exception ex) { problem = ex.Message; }
+  }
+  action Compare() { comparing = !comparing; }
+  render {
+    Stack(gap: 4, w: "100%") {
+      Card() {
+        Stack(gap: 3) {
+          Row(gap: 2, align: Align.Center, justify: Justify.Between, wrap: Wrapping.Wrap) {
+            Row(gap: 2, align: Align.Center) {
+              Badge(draft ? "Draft" : "In review", tone: draft ? Tone.Primary : Tone.Warning);
+              Text(mine ? $"Version {open.Number} · yours"
+                        : (open.AuthorName != "" ? $"Version {open.Number} · by {open.AuthorName}" : $"Version {open.Number}"),
+                   fontSize: FontSize.Label, color: Colors.TextMuted);
+            }
+            if (waiting) { Row(gap: 2, align: Align.Center) { Spinner(size: Size.Sm); Text("Moving it…", fontSize: FontSize.Label, color: Colors.TextMuted); } }
+          }
+          if (draft && sentBack != null && sentBack!.Version == open.Number) {
+            Alert(sentBack!.Note, title: "Sent back by " + sentBack!.By, tone: Tone.Warning);
+          }
+          if (refused != null && !waiting) { Alert(refused!.Problem, title: "Not done", tone: Tone.Danger); }
+          if (draft) {
+            Field("Title", value: title, placeholder: "What a reader is trying to do");
+            Field("One line about it", value: summary, placeholder: "Shown under the title, in search results and to search engines");
+          } else {
+            Stack(gap: 1) {
+              Text(open.Title, fontSize: FontSize.Heading, fontWeight: FontWeight.Semibold);
+              if (open.Summary != "") { Text(open.Summary, color: Colors.TextSecondary); }
+            }
+          }
+        }
+      }
+      Box(w: "100%", minH: "360px", label: "Article text", rounded: Radius.Lg, border: Colors.Border, borderW: 1, bg: Colors.Surface,
+          flowDirection: KnowledgeRightToLeft(open.Language) ? FlowDirection.RightToLeft : FlowDirection.LeftToRight) {
+        MarkdownEditor(ownerType: "KnowledgeRevision", ownerId: open.Id, property: "Body", readOnly: !draft,
+                       placeholder: "Write the answer — steps, a screenshot, what to do if it does not work.", outline: draft);
+      }
+      if (comparing && live != null) {
+        Stack(gap: 2, label: "What readers read now") {
+          Text($"What readers read now — version {live!.Number}", fontWeight: FontWeight.Semibold);
+          Box(w: "100%", rounded: Radius.Lg, border: Colors.Border, borderW: 1, bg: Colors.Sunken) {
+            MarkdownEditor(ownerType: "KnowledgeRevision", ownerId: live!.Id, property: "Body", readOnly: true);
+          }
+        }
+      }
+      Card() {
+        Stack(gap: 3, label: "What happens next") {
+          if (draft) {
+            Field("What changed", value: note, placeholder: "One line for the history — “Screenshots for the new menu”");
+          }
+          if (draft || reviews) {
+            TextAreaField(draft ? "A note for the reviewer (optional)" : "What to change (to send it back)", value: stepNote, rows: 2);
+          }
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+            if (draft) {
+              Button("Save", onPress: Save, disabled: !changed || waiting);
+              if (said != "" && !changed) { Done(said); }
+              if (requireReview || !reviews) {
+                Button("Send for review", onPress: () => Step(KnowledgeStepKind.Submit), tone: Tone.Primary, disabled: waiting);
+              }
+              if (!requireReview && reviews) {
+                Button("Publish", onPress: () => Step(KnowledgeStepKind.Publish), tone: Tone.Primary, disabled: waiting);
+              }
+              Button("Throw away this draft", onPress: Discard, tone: Tone.Ghost, disabled: waiting || open.SubmittedAt != null);
+            } else {
+              if (reviews && !(requireReview && mine)) {
+                Button("Publish", onPress: () => Step(KnowledgeStepKind.Publish), tone: Tone.Primary, disabled: waiting);
+                Button("Send back", onPress: () => Step(KnowledgeStepKind.SendBack), disabled: waiting || stepNote.Trim() == "");
+              }
+              if (reviews && requireReview && mine) {
+                Text("You wrote this one — another reviewer publishes it.", fontSize: FontSize.Label, color: Colors.TextMuted);
+              }
+              // Taking it back is the writer's move; a reviewer who wants changes sends it back, saying what.
+              if (mine || !reviews) {
+                Button("Take it back to change it", onPress: () => Step(KnowledgeStepKind.TakeBack), tone: Tone.Ghost, disabled: waiting);
+              }
+            }
+            if (live != null) {
+              Button(comparing ? "Hide what readers read" : "Compare with what readers read", onPress: Compare, tone: Tone.Ghost);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// What readers of this language read now, with a way to change it.
+[Composable]
+public component KnowledgeLivePane(KnowledgeArticleHead a, KnowledgeVersionHead live, string language) {
+  string problem = "";
+  action Edit() {
+    problem = "";
+    try { OpenKnowledgeDraft(a.Id, language); } catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    Stack(gap: 4, w: "100%") {
+      Card() {
+        Stack(gap: 3) {
+          Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+            Badge(a.Archived ? "Archived" : "Published", tone: a.Archived ? Tone.Ghost : Tone.Success);
+            Text(live.PublishedAt == null ? $"Version {live.Number}"
+                   : (live.PublishedBy != "" ? $"Version {live.Number} · published {live.PublishedAt.Value:d MMMM yyyy} by {live.PublishedBy}"
+                                             : $"Version {live.Number} · published {live.PublishedAt.Value:d MMMM yyyy}"),
+                 fontSize: FontSize.Label, color: Colors.TextMuted);
+          }
+          Stack(gap: 1) {
+            Text(live.Title, fontSize: FontSize.Heading, fontWeight: FontWeight.Semibold);
+            if (live.Summary != "") { Text(live.Summary, color: Colors.TextSecondary); }
+          }
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 2) { Button("Edit — start version " + (live.Number + 1), onPress: Edit, tone: Tone.Primary); }
+        }
+      }
+      Box(w: "100%", rounded: Radius.Lg, border: Colors.Border, borderW: 1, bg: Colors.Surface,
+          flowDirection: KnowledgeRightToLeft(language) ? FlowDirection.RightToLeft : FlowDirection.LeftToRight) {
+        MarkdownEditor(ownerType: "KnowledgeRevision", ownerId: live.Id, property: "Body", readOnly: true);
+      }
+    }
+  }
+}
+
+/// A language the article is not written in yet — start it from the original, to translate.
+[Composable]
+public component KnowledgeNoVersionPane(KnowledgeArticleHead a, string language) {
+  string problem = "";
+  action Start() {
+    problem = "";
+    try { OpenKnowledgeDraft(a.Id, language); } catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    Card() {
+      Stack(gap: 3, align: Align.Start) {
+        EmptyState("Not written in " + language.ToUpper() + " yet",
+                   body: "Readers of this language read the original until there is a version in theirs. A new version starts as a copy of the original's words, to translate.");
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        Button("Start the " + language.ToUpper() + " version", onPress: Start, tone: Tone.Primary);
+      }
+    }
+  }
+}
+
+/// Where the article sits and who reads it, its address, and archiving it.
+[Composable]
+public component KnowledgePlacePane(KnowledgeArticleHead a) {
+  live var sections = KnowledgeSection.OrderBy(s => s.Category.Position).ThenBy(s => s.Category.Name).ThenBy(s => s.Position)
+    .Select(s => new KnowledgeSectionChoice { Id = s.Id, Label = s.Category.Name + " › " + s.Name,
+                                              TeamOnly = s.Category.Audience == KnowledgeAudience.Team }).ToList();
+  live var reviews = ReviewsKnowledge;
+  KnowledgeSectionChoice? into = null;
+  bool teamOnly = a.Audience == KnowledgeAudience.Team;
+  string problem = "";
+  string said = "";
+  string why = "";
+  string readers = "";
+  on mount { readers = KnowledgePath("a/" + a.Slug); }
+  action Place() {
+    problem = ""; said = "";
+    try {
+      PlaceKnowledgeArticle(a.Id, into == null ? a.Section : into!.Id, teamOnly ? KnowledgeAudience.Team : KnowledgeAudience.Everyone);
+      said = "Saved";
+    } catch (Exception ex) { problem = ex.Message; }
+  }
+  action Archive() {
+    problem = "";
+    try { KnowledgeDeskStep(a.Id, Guid.Empty, a.Archived ? KnowledgeStepKind.Restore : KnowledgeStepKind.Archive, why); why = ""; }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    Card(title: "Where it is") {
+      Stack(gap: 3) {
+        Dropdown("Section", value: into, options: sections.ToArray(),
+                 placeholder: a.CategoryName + " › " + a.SectionName) { s => Text(s.Label); }
+        Switch("Only the team reads it", value: teamOnly);
+        if (a.CategoryTeamOnly) {
+          Text("Its category is the team's own, so only the team reads it whatever this says.", fontSize: FontSize.Caption,
+               color: Colors.TextMuted);
+        }
+        Row(gap: 2, align: Align.Center) {
+          Button("Save where it is", onPress: Place, size: Size.Sm,
+                 disabled: into == null && teamOnly == (a.Audience == KnowledgeAudience.Team));
+          if (said != "") { Done(said); }
+        }
+        Divider();
+        Stack(gap: 1) {
+          Text("Its address", fontSize: FontSize.Label, color: Colors.TextMuted);
+          Text(readers, fontFamily: Font.Mono, fontSize: FontSize.Caption, wordBreak: WordBreak.BreakAll);
+          if (a.EverPublished && !a.Archived) { TextLink("Open it in the help centre", readers); }
+        }
+        if (reviews && a.EverPublished) {
+          Divider();
+          if (!a.Archived) { Field("Why archive it (optional)", value: why, placeholder: "No longer true for the new version"); }
+          Button(a.Archived ? "Bring it back" : "Archive it", onPress: Archive, size: Size.Sm,
+                 tone: a.Archived ? Tone.Default : Tone.Danger);
+          Text(a.Archived ? "Archived — no reader reads it, and it is in no search. Its versions are kept."
+                          : "Archived, no reader reads it and it is in no search. Bring it back any time.",
+               fontSize: FontSize.Caption, color: Colors.TextMuted);
+        }
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      }
+    }
+  }
+}
+
+/// The versions in this language, and what happened — newest first.
+[Composable]
+public component KnowledgeHistoryPane(List<KnowledgeVersionHead> versions, List<KnowledgeStepHead> steps) {
+  string problem = "";
+  action Restore(Guid version) {
+    problem = "";
+    try { RestoreKnowledgeVersion(version); } catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    Card(title: "History") {
+      Stack(gap: 3) {
+        if (versions.Count == 0) { Text("Nothing written in this language yet.", color: Colors.TextMuted, fontSize: FontSize.Label); }
+        Stack(gap: 2, role: UiRole.List, label: "Versions") {
+          foreach (var v in versions) {
+            Stack(gap: 0, role: UiRole.ListItem) {
+              Row(gap: 2, align: Align.Center, justify: Justify.Between) {
+                Text($"Version {v.Number}", fontWeight: FontWeight.Medium, fontSize: FontSize.Label);
+                Badge(v.Stage.Label, tone: v.Stage == KnowledgeStage.Published ? Tone.Success
+                                         : (v.Stage == KnowledgeStage.InReview ? Tone.Warning
+                                         : (v.Stage == KnowledgeStage.Draft ? Tone.Primary : Tone.Ghost)));
+              }
+              Text((v.ChangeNote != "" ? v.ChangeNote + " · " : "") + (v.AuthorName != "" ? v.AuthorName : "")
+                   + (v.PublishedAt != null ? $" · {v.PublishedAt.Value:d MMM yyyy}" : ""), fontSize: FontSize.Caption, color: Colors.TextMuted);
+              if (v.Stage == KnowledgeStage.Superseded) {
+                Box(pt: 1) { Button("Start a draft from it", onPress: () => Restore(v.Id), tone: Tone.Ghost, size: Size.Sm); }
+              }
+            }
+          }
+        }
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        if (steps.Count > 0) {
+          Divider();
+          Stack(gap: 2, role: UiRole.List, label: "What happened") {
+            foreach (var s in steps.Take(12).ToList()) {
+              Stack(gap: 0, role: UiRole.ListItem) {
+                Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+                  Text(s.Version > 0 ? $"{s.Kind.Label} · version {s.Version}" : s.Kind.Label, fontSize: FontSize.Label,
+                       fontWeight: FontWeight.Medium);
+                  if (s.State == KnowledgeStepState.Refused) { Badge("Not done", tone: Tone.Danger); }
+                  if (s.State == KnowledgeStepState.Waiting) { Spinner(size: Size.Sm); }
+                }
+                Text((s.By != "" ? s.By + " · " : "") + $"{s.At:d MMM HH:mm}", fontSize: FontSize.Caption, color: Colors.TextMuted);
+                if (s.Note != "") { Text("“" + s.Note + "”", fontSize: FontSize.Caption, color: Colors.TextSecondary); }
+                if (s.Problem != "") { Text(s.Problem, fontSize: FontSize.Caption, color: Colors.Danger); }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// ── waiting for review ────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Every version waiting for a reviewer, the longest-waiting first.
+[Composable]
+public component KnowledgeReviewQueue() {
+  live var waiting = KnowledgeRevision.Where(r => r.Stage == KnowledgeStage.InReview).OrderBy(r => r.SubmittedAt)
+    .Select(r => new KnowledgeVersionHead {
+      Id = r.Id, Article = r.Article.Id, Language = r.Language, Number = r.Number, Stage = r.Stage, Title = r.Title,
+      Summary = r.Summary, ChangeNote = r.ChangeNote, Author = r.Author == null ? Guid.Empty : r.Author.Id,
+      AuthorName = r.Author == null ? "" : r.Author.DisplayName, Created = r.CreatedAt, SubmittedAt = r.SubmittedAt }).ToList();
+  live var me = Session.CurrentUser;
+  live var meId = me == null ? Guid.Empty : me.Id;
+  string desk = "";
+  on mount { desk = KnowledgeDeskPath(); }
+  render {
+    Stack(gap: 5, w: "100%", maxW: "1080px", mx: "auto") {
+      Stack(gap: 2) {
+        TextLink("‹ Knowledge base", desk);
+        PageHead("Waiting for review", subtitle: "A reviewer who did not write a version publishes it, or sends it back saying what to change.");
+      }
+      if (waiting.Count == 0) {
+        EmptyState("Nothing is waiting", body: "Versions sent for review appear here, the longest-waiting first.");
+      } else {
+        Stack(gap: 0, role: UiRole.List, label: "Versions waiting", rounded: Radius.Lg, border: Colors.Border, borderW: 1,
+              bg: Colors.Surface, overflow: Overflow.Hidden) {
+          foreach (var v in waiting) {
+            Box(role: UiRole.ListItem, borderBW: 1, border: Colors.Border) {
+              Link(href: desk + "/a/" + v.Article.ToString() + "/" + v.Language, label: v.Title, color: Colors.OnSurface,
+                   textDecoration: TextDecoration.None) {
+                Row(gap: 4, px: 4, py: 3, align: Align.Center, justify: Justify.Between, wrap: Wrapping.Wrap) {
+                  Stack(gap: 1, minW: "0", grow: 1) {
+                    Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+                      Text(v.Title, fontWeight: FontWeight.Semibold);
+                      Badge(v.Language.ToUpper() + $" · version {v.Number}", tone: Tone.Ghost);
+                    }
+                    Text((v.Author == meId ? "Yours" : "By " + v.AuthorName) + (v.SubmittedAt != null ? $" · sent {v.SubmittedAt.Value:d MMM HH:mm}" : "")
+                         + (v.ChangeNote != "" ? " · " + v.ChangeNote : ""), fontSize: FontSize.Caption, color: Colors.TextMuted);
+                  }
+                  if (v.Author == meId) { Badge("Another reviewer publishes it", tone: Tone.Ghost); }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// ── the categories and sections ───────────────────────────────────────────────────────────────────────────────────────
+
+/// The help centre's shelves: each category, who reads it, its sections and how many articles each holds — added,
+/// renamed, reordered, and deleted when empty.
+[Composable]
+public component KnowledgeShelvesDesk() {
+  live var categories = KnowledgeCategory.OrderBy(c => c.Position).ThenBy(c => c.Name).Select(c => new KnowledgeCategoryRow {
+      Id = c.Id, Name = c.Name, Slug = c.Slug, Description = c.Description, TeamOnly = c.Audience == KnowledgeAudience.Team }).ToList();
+  live var sections = KnowledgeSection.OrderBy(s => s.Position).ThenBy(s => s.Name).Select(s => new KnowledgeSectionLine {
+      Id = s.Id, Category = s.Category.Id, Name = s.Name, Slug = s.Slug, Description = s.Description,
+      Articles = s.Articles.Count() }).ToList();
+  string desk = "";
+  string newName = "";
+  string newLine = "";
+  bool newTeamOnly = false;
+  string problem = "";
+  on mount { desk = KnowledgeDeskPath(); }
+  action Add() {
+    problem = "";
+    try { AddKnowledgeCategory(newName, newLine, newTeamOnly); newName = ""; newLine = ""; newTeamOnly = false; }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    Stack(gap: 5, w: "100%", maxW: "880px", mx: "auto") {
+      Stack(gap: 2) {
+        TextLink("‹ Knowledge base", desk);
+        PageHead("Categories", subtitle: "What a reader picks first on the help centre's front page, and the sections inside each.");
+      }
+      if (categories.Count == 0) {
+        EmptyState("No categories yet", body: "Start with two or three — “Getting started”, “Your account”, “Billing” — and a section in each.");
+      }
+      foreach (var c in categories) {
+        KnowledgeCategoryCard(c, sections.Where(s => s.Category == c.Id).ToList(),
+                              c.Id == categories.First().Id, c.Id == categories.Last().Id);
+      }
+      Card(title: "Add a category") {
+        Stack(gap: 3, label: "Add a category") {
+          Field("Name", value: newName, placeholder: "Your account", onEnter: Add);
+          Field("One line about it (optional)", value: newLine, placeholder: "Signing in, your details and your plan");
+          Switch("Only the team reads it", value: newTeamOnly);
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 2) { Button("Add the category", onPress: Add, tone: Tone.Primary, disabled: newName.Trim() == ""); }
+        }
+      }
+    }
+  }
+}
+
+/// A section, as the categories page lists it.
+public class KnowledgeSectionLine {
+  public Guid Id = Guid.Empty;
+  public Guid Category = Guid.Empty;
+  public string Name = "";
+  public string Slug = "";
+  public string Description = "";
+  public int Articles;
+}
+
+/// One category on the categories page — its name, line and who reads it, its sections, and a new section.
+[Composable]
+public component KnowledgeCategoryCard(KnowledgeCategoryRow c, List<KnowledgeSectionLine> sections, bool first, bool last) {
+  string name = c.Name;
+  string line = c.Description;
+  bool teamOnly = c.TeamOnly;
+  string sectionName = "";
+  string problem = "";
+  action Save() {
+    problem = "";
+    try { EditKnowledgeCategory(c.Id, name, line, teamOnly); } catch (Exception ex) { problem = ex.Message; }
+  }
+  action AddSection() {
+    problem = "";
+    try { AddKnowledgeSection(c.Id, sectionName); sectionName = ""; } catch (Exception ex) { problem = ex.Message; }
+  }
+  action Move(bool earlier) {
+    try { MoveKnowledgeCategory(c.Id, earlier); } catch (Exception ex) { problem = ex.Message; }
+  }
+  action DropSection(Guid s) {
+    problem = "";
+    try { DeleteKnowledgeSection(s); } catch (Exception ex) { problem = ex.Message; }
+  }
+  action Drop() {
+    problem = "";
+    try { DeleteKnowledgeCategory(c.Id); } catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    Card() {
+      Stack(gap: 4, label: c.Name) {
+        Row(gap: 2, align: Align.Center, justify: Justify.Between, wrap: Wrapping.Wrap) {
+          Row(gap: 2, align: Align.Center) {
+            Text(c.Name, fontSize: FontSize.Subhead, fontWeight: FontWeight.Semibold);
+            if (c.TeamOnly) { Badge("Team only", tone: Tone.Warning); }
+            Text("/c/" + c.Slug, fontFamily: Font.Mono, fontSize: FontSize.Caption, color: Colors.TextMuted);
+          }
+          Row(gap: 1) {
+            IconButton("Move up", () => Move(true), disabled: first, size: Size.Sm) { Icon(Icons.ChevronUp); }
+            IconButton("Move down", () => Move(false), disabled: last, size: Size.Sm) { Icon(Icons.ChevronDown); }
+          }
+        }
+        Row(gap: 3, wrap: Wrapping.Wrap, align: Align.End) {
+          Box(grow: 1, minW: "200px") { Field("Name", value: name); }
+          Box(grow: 2, minW: "240px") { Field("One line about it", value: line); }
+        }
+        Row(gap: 3, align: Align.Center, wrap: Wrapping.Wrap) {
+          Switch("Only the team reads it", value: teamOnly);
+          Button("Save", onPress: Save, size: Size.Sm, disabled: name == c.Name && line == c.Description && teamOnly == c.TeamOnly);
+        }
+        Stack(gap: 1, role: UiRole.List, label: "Sections") {
+          foreach (var s in sections) {
+            Row(gap: 2, align: Align.Center, justify: Justify.Between, role: UiRole.ListItem, py: 1, borderBW: 1, border: Colors.Border) {
+              Text(s.Name, fontWeight: FontWeight.Medium);
+              Row(gap: 2, align: Align.Center) {
+                Text(s.Articles == 1 ? "1 article" : $"{s.Articles} articles", fontSize: FontSize.Caption, color: Colors.TextMuted);
+                if (s.Articles == 0) { IconButton("Delete " + s.Name, () => DropSection(s.Id), size: Size.Sm, tone: Tone.Ghost) { Icon(Icons.Trash); } }
+              }
+            }
+          }
+        }
+        Row(gap: 2, align: Align.End, wrap: Wrapping.Wrap) {
+          Box(grow: 1, minW: "200px") { Field("New section", value: sectionName, placeholder: "Signing in", onEnter: AddSection); }
+          Button("Add", onPress: AddSection, size: Size.Sm, disabled: sectionName.Trim() == "");
+          if (sections.Count == 0) { Button("Delete the category", onPress: Drop, size: Size.Sm, tone: Tone.Danger); }
+        }
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      }
+    }
+  }
+}

@@ -1,0 +1,468 @@
+// THE HELP CENTRE — what a reader sees: a front page with a search and the categories, a category with its sections, an
+// article in the reader's language, and search results. Each is a PART (an `abstract component`), so a site's look can
+// draw it in its own design (`component AtelierArticle(string slug) : HelpCentreArticle { … }`); the designs here are
+// the default, themed by the app. The kit's pages place the parts and write the head a search engine reads.
+//
+// ⚑ NOTHING HERE DECIDES WHO READS WHAT. Every part asks the kit's reads, which are the reader's own — so a team article
+//   is simply not there for a customer, and an address that names one answers "not here", exactly as an address that
+//   names nothing does.
+namespace Osysharp.KnowledgeBase;
+
+using Osysharp.Ui;
+using Osysharp.Seo;
+
+// ── the parts a look draws ────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The help centre's front page: the question, a search, the categories, what changed lately, and a way to ask.
+public abstract component HelpCentreFront();
+
+/// One category: its name, its sections and their articles.
+public abstract component HelpCentreCategory(string slug);
+
+/// One article, in the reader's language.
+public abstract component HelpCentreArticle(string slug);
+
+/// What a search found.
+public abstract component HelpCentreSearch(string query);
+
+/// The frame around every page of the help centre — the site's header and footer, with the page inside it (its
+/// children, `Slot`). The kit's own frame is nothing at all; an app designs this contract once to put the whole help
+/// centre in its own site, and keeps the kit's pages, their addresses and the head each writes for search engines:
+///     component MyHelpFrame() : HelpCentreFrame { render { SiteHeader(); Slot; SiteFooter(); } }
+public abstract component HelpCentreFrame();
+
+/// The kit's frame: the page, and nothing around it.
+public component KnowledgeBareFrame() : HelpCentreFrame { render { Box(w: "100%", minH: "100vh", bg: Colors.Bg) { Slot; } } }
+
+/// The help centre's LAYOUT: the frame — the app's design of it — with the routed page inside. Every help-centre page
+/// names it, so moving from one page to another swaps only the page: the site's header, its language switch, its
+/// account and its chat stay on screen, and keep what they hold.
+[Layout]
+[AllowAnonymous]
+public component HelpCentreLayout() { render { HelpCentreFrame { Outlet; } } }
+
+// ── the pages ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+//
+// Each page is routed inside the help centre's layout, whose frame (`HelpCentreFrame`) an app designs to put the pages in
+// its own site — so it keeps the kit's pages, their addresses and their heads, and its frame stays on screen between them. An app that wants a page at another
+// address takes it over by name, and writes its own head.
+//
+// The head is what a search engine reads in the first response, so it is computed from the PUBLIC rows only — what a
+// signed-out visitor may read — whoever asked for the page.
+
+/// The front page.
+[Route("/help-centre")]
+[Layout(HelpCentreLayout)]
+[AllowAnonymous]
+[Title("Help centre")]
+public component HelpCentrePage() {
+  head {
+    Description = "Answers, guides and how-tos — search, or start with a category.";
+    Canonical = "/help-centre";
+  }
+  render { HelpCentreFront(); }
+}
+
+/// A category.
+[Route("/help-centre/c/{slug}")]
+[Layout(HelpCentreLayout)]
+[AllowAnonymous]
+[Title("Help centre")]
+public component HelpCentreCategoryPage(string slug) {
+  // The slug is unique: one category, or none.
+  var shelves = KnowledgeCategory.Where(c => c.Slug == slug && c.Audience == KnowledgeAudience.Everyone)
+    .Select(c => new KnowledgeHeadLine { Title = c.Name, Summary = c.Description }).Take(1).ToList();
+  head {
+    Title = shelves.Count == 0 ? "Not found" : shelves[0].Title;
+    Description = shelves.Count == 0 || shelves[0].Summary == "" ? null : shelves[0].Summary;
+    Canonical = "/help-centre/c/" + slug;
+    NoIndex = shelves.Count == 0;
+  }
+  render { HelpCentreCategory(slug); }
+}
+
+/// An article.
+[Route("/help-centre/a/{slug}")]
+[Layout(HelpCentreLayout)]
+[AllowAnonymous]
+[Title("Help centre")]
+[SuppressWarning("cost-unbounded-read")]   // one article's public versions — one per language
+public component HelpCentreArticlePage(string slug) {
+  // The public versions of the article, one per language — a team article has none here.
+  var versions = KnowledgeRevision.Where(r => r.Article.Slug == slug && r.Stage == KnowledgeStage.Published
+      && r.Article.ArchivedAt == null && r.Article.Audience == KnowledgeAudience.Everyone
+      && r.Article.Section.Category.Audience == KnowledgeAudience.Everyone)
+    .Select(r => new KnowledgeHeadLine { Language = r.Language, Title = r.Title, Summary = r.Summary, At = r.PublishedAt,
+                                         Category = r.Article.Section.Category.Name, CategorySlug = r.Article.Section.Category.Slug })
+    .ToList();
+  head {
+    Title = versions.Count == 0 ? "Not found" : KnowledgeHeadFor(versions, Session.Language).Title;
+    Description = versions.Count == 0 || KnowledgeHeadFor(versions, Session.Language).Summary == "" ? null
+      : KnowledgeHeadFor(versions, Session.Language).Summary;
+    Canonical = "/help-centre/a/" + slug;
+    NoIndex = versions.Count == 0;
+    StructuredData = versions.Count == 0 ? null : [
+      new SeoArticle { Type = "TechArticle", Headline = KnowledgeHeadFor(versions, Session.Language).Title,
+                       Description = KnowledgeHeadFor(versions, Session.Language).Summary == "" ? null
+                         : KnowledgeHeadFor(versions, Session.Language).Summary,
+                       Language = KnowledgeHeadFor(versions, Session.Language).Language,
+                       Modified = KnowledgeHeadFor(versions, Session.Language).At,
+                       // Relative, so it is the address the page was asked at — an app on a domain of its own included
+                       // (`App.BaseUrl` is the platform's address for the app, not the custom domain's).
+                       Url = "/help-centre/a/" + slug },
+      new SeoBreadcrumbList { Steps = [
+        new SeoBreadcrumb { Name = KnowledgeHeadFor(versions, Session.Language).Category,
+                            Url = "/help-centre/c/" + KnowledgeHeadFor(versions, Session.Language).CategorySlug },
+        new SeoBreadcrumb { Name = KnowledgeHeadFor(versions, Session.Language).Title } ] },
+    ];
+  }
+  render { HelpCentreArticle(slug); }
+}
+
+/// Search results — `/help-centre/search` asks; `/help-centre/search/{query}` answers.
+[Route("/help-centre/search")]
+[Layout(HelpCentreLayout)]
+[AllowAnonymous]
+[Title("Search")]
+public component HelpCentreSearchPage() {
+  head { NoIndex = true; }
+  render { HelpCentreSearch(""); }
+}
+
+[Route("/help-centre/search/{query}")]
+[Layout(HelpCentreLayout)]
+[AllowAnonymous]
+[Title("Search")]
+public component HelpCentreResultsPage(string query) {
+  head { NoIndex = true; }
+  render { HelpCentreSearch(query); }
+}
+
+// ── the default designs ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The front page, as the kit draws it.
+public component KnowledgeFront() : HelpCentreFront {
+  KnowledgePage? page = null;
+  string problem = "";
+  on mount {
+    try { page = KnowledgeFrontNow(); } catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    Stack(gap: 10, w: "100%", pb: 10) {
+      KnowledgeHero(page == null ? "" : page!.Places.Name, "How can we help?", "");
+      Stack(gap: 10, w: "100%", maxW: "1080px", mx: "auto", px: 5) {
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        if (page == null && problem == "") { KnowledgeLoading(); }
+        if (page != null) {
+          if (page!.Shelves.Count == 0) {
+            EmptyState("Nothing here yet", body: "Answers appear here as the team publishes them.");
+          } else {
+            Box(display: Display.Grid, cols: "repeat(auto-fill, minmax(260px, 1fr))", gap: 4, label: "Categories") {
+              foreach (var s in page!.Shelves) { KnowledgeShelfCard(s); }
+            }
+          }
+          if (page!.Recent.Count > 0) {
+            Stack(gap: 3, label: "Recently updated") {
+              Text("Recently updated", fontSize: FontSize.Subhead, fontWeight: FontWeight.Semibold);
+              KnowledgeLinkList(page!.Recent);
+            }
+          }
+          KnowledgeAskSomebody(page!.Places);
+        }
+      }
+    }
+  }
+}
+
+/// While a page of the help centre loads.
+[Composable]
+public component KnowledgeLoading() {
+  render {
+    Stack(gap: 3, w: "100%", label: "Loading") {
+      Skeleton(shape: SkeletonShape.HalfLine);
+      Skeleton(shape: SkeletonShape.Block);
+      Skeleton(shape: SkeletonShape.Block);
+    }
+  }
+}
+
+/// The band at the top of the front page and the search page: the help centre's name, a question, and the search.
+[Composable]
+public component KnowledgeHero(string name, string question, string query) {
+  render {
+    Box(w: "100%", bg: Colors.Primary.Subtle, borderBW: 1, border: Colors.Border, py: 12, px: 5) {
+      Stack(gap: 5, w: "100%", maxW: "720px", mx: "auto", align: Align.Center) {
+        Stack(gap: 2, align: Align.Center) {
+          if (name != "") {
+            Text(name, fontSize: FontSize.Label, fontWeight: FontWeight.Semibold, color: Colors.Primary.Strong,
+                 letterSpacing: "0.04em", textTransform: TextTransform.Uppercase);
+          }
+          Text(question, fontSize: FontSize.Title, fontWeight: FontWeight.Semibold, letterSpacing: "-0.02em",
+               textAlign: TextAlign.Center);
+        }
+        KnowledgeSearchBox(query);
+      }
+    }
+  }
+}
+
+/// The search box — Enter or the button opens the results.
+[Composable]
+[AllowAnonymous]
+public component KnowledgeSearchBox(string query = "") {
+  string q = query;
+  action Go() {
+    var words = KnowledgeWords(q);
+    if (words.Count == 0) { return; }
+    Navigation.Go(KnowledgePath("search/" + string.Join("-", words)));
+  }
+  render {
+    Row(gap: 2, w: "100%", align: Align.End, role: UiRole.Search, label: "Search the help centre") {
+      Box(grow: 1, minW: "0") {
+        Field("Search the help centre", value: q, type: "search", placeholder: "Describe what you are trying to do",
+              onEnter: Go);
+      }
+      Button("Search", onPress: Go, tone: Tone.Primary);
+    }
+  }
+}
+
+/// A category on the front page: its name, its line, and how many articles.
+[Composable]
+public component KnowledgeShelfCard(KnowledgeShelf shelf) {
+  render {
+    Link(href: shelf.Href, label: shelf.Name, color: Colors.OnSurface, textDecoration: TextDecoration.None) {
+      Stack(gap: 2, p: 5, h: "100%", rounded: Radius.Lg, border: Colors.Border, borderW: 1, bg: Colors.Surface) {
+        Row(gap: 2, align: Align.Center, justify: Justify.Between) {
+          Text(shelf.Name, fontSize: FontSize.Subhead, fontWeight: FontWeight.Semibold);
+          if (shelf.TeamOnly) { Badge("Team only", tone: Tone.Warning); }
+        }
+        if (shelf.Description != "") { Text(shelf.Description, color: Colors.TextSecondary); }
+        Text(shelf.Count == 1 ? "1 article" : $"{shelf.Count} articles", fontSize: FontSize.Caption, color: Colors.TextMuted);
+      }
+    }
+  }
+}
+
+/// Articles as a list — each its title and its line.
+[Composable]
+public component KnowledgeLinkList(List<KnowledgeLink> links) {
+  render {
+    Stack(gap: 0, role: UiRole.List, rounded: Radius.Lg, border: Colors.Border, borderW: 1, bg: Colors.Surface, overflow: Overflow.Hidden) {
+      foreach (var l in links) {
+        Box(role: UiRole.ListItem, borderBW: 1, border: Colors.Border) {
+          Link(href: l.Href, label: l.Title, color: Colors.OnSurface, textDecoration: TextDecoration.None) {
+            Stack(gap: 1, px: 4, py: 3) {
+              Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+                Text(l.Title, fontWeight: FontWeight.Medium, color: Colors.Primary.Strong);
+                if (l.TeamOnly) { Badge("Team only", tone: Tone.Warning); }
+                if (l.InAnotherLanguage) { Badge(l.Language.ToUpper(), tone: Tone.Ghost); }
+              }
+              if (l.Summary != "") { Text(l.Summary, fontSize: FontSize.Label, color: Colors.TextMuted); }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// "Still need help?" — where the app lets a reader ask a person. Nothing when it names nowhere.
+[Composable]
+public component KnowledgeAskSomebody(KnowledgePlaces places) {
+  render {
+    if (places.Contact != "") {
+      Row(gap: 4, p: 5, rounded: Radius.Lg, bg: Colors.Sunken, align: Align.Center, justify: Justify.Between,
+          wrap: Wrapping.Wrap, label: "Still need help?") {
+        Stack(gap: 1) {
+          Text("Still need help?", fontWeight: FontWeight.Semibold);
+          Text("A person on the team reads every question.", color: Colors.TextSecondary, fontSize: FontSize.Label);
+        }
+        Link(href: places.Contact, label: places.ContactLabel, textDecoration: TextDecoration.None) {
+          Box(px: 4, py: 2, rounded: Radius.Md, bg: Colors.Primary, color: Colors.OnPrimary, fontWeight: FontWeight.Semibold,
+              fontSize: FontSize.Label) { Text(places.ContactLabel); }
+        }
+      }
+    }
+  }
+}
+
+/// Where a page sits — the help centre, then a category.
+[Composable]
+public component KnowledgeTrail(KnowledgePlaces places, string category = "", string categoryHref = "") {
+  render {
+    Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap, role: UiRole.Navigation, label: "Breadcrumb") {
+      Link(href: places.Home, color: Colors.TextMuted, fontSize: FontSize.Label) { Text(places.Name); }
+      if (category != "") {
+        Icon(Icons.ChevronRight, size: 12, color: Colors.TextMuted);
+        Link(href: categoryHref, color: Colors.TextMuted, fontSize: FontSize.Label) { Text(category); }
+      }
+    }
+  }
+}
+
+/// A place that is not here — no such address, or nothing this reader may read there. It says the same either way.
+[Composable]
+public component KnowledgeNotHere(KnowledgePlaces places, string what) {
+  render {
+    Stack(gap: 6, w: "100%", maxW: "720px", mx: "auto", px: 5, py: 12) {
+      EmptyState(what == "category" ? "We could not find that category" : "We could not find that article",
+                 body: "It may have moved, or it is not one you can read. Search for what you need instead.");
+      KnowledgeSearchBox("");
+      KnowledgeAskSomebody(places);
+    }
+  }
+}
+
+/// A category, as the kit draws it.
+public component KnowledgeCategoryPage(string slug) : HelpCentreCategory {
+  KnowledgePage? page = null;
+  on mount { page = KnowledgeCategoryNow(slug); }
+  render {
+    if (page == null) {
+      Box(w: "100%", maxW: "880px", mx: "auto", px: 5, py: 8) { KnowledgeLoading(); }
+    } else {
+      if (page!.Shelf == null) {
+        KnowledgeNotHere(page!.Places, "category");
+      } else {
+        Stack(gap: 8, w: "100%", maxW: "880px", mx: "auto", px: 5, py: 8) {
+          Stack(gap: 3) {
+            KnowledgeTrail(page!.Places);
+            Row(gap: 3, align: Align.Center, wrap: Wrapping.Wrap) {
+              Text(page!.Shelf!.Name, fontSize: FontSize.Title, fontWeight: FontWeight.Semibold, letterSpacing: "-0.02em");
+              if (page!.Shelf!.TeamOnly) { Badge("Team only", tone: Tone.Warning); }
+            }
+            if (page!.Shelf!.Description != "") {
+              Text(page!.Shelf!.Description, color: Colors.TextSecondary, fontSize: FontSize.Subhead);
+            }
+          }
+          foreach (var s in page!.Shelf!.Sections) {
+            Stack(gap: 3, label: s.Name) {
+              Stack(gap: 1) {
+                Text(s.Name, fontSize: FontSize.Heading, fontWeight: FontWeight.Semibold);
+                if (s.Description != "") { Text(s.Description, color: Colors.TextMuted); }
+              }
+              KnowledgeLinkList(s.Articles);
+            }
+          }
+          KnowledgeAskSomebody(page!.Places);
+        }
+      }
+    }
+  }
+}
+
+/// An article, as the kit draws it — in the reader's language, or saying it is not in theirs yet.
+public component KnowledgeArticlePage(string slug) : HelpCentreArticle {
+  KnowledgePage? page = null;
+  on mount { page = KnowledgeArticleNow(slug); }
+  render {
+    if (page == null) {
+      Box(w: "100%", maxW: "880px", mx: "auto", px: 5, py: 8) { KnowledgeLoading(); }
+    } else {
+      if (!page!.Article.Found) {
+        KnowledgeNotHere(page!.Places, "article");
+      } else {
+        Stack(gap: 8, w: "100%", maxW: "880px", mx: "auto", px: 5, py: 8) {
+          Stack(gap: 4) {
+            KnowledgeTrail(page!.Places, page!.Article.Category, page!.Article.CategoryHref);
+            Stack(gap: 2) {
+              Text(page!.Article.Title, fontSize: FontSize.Title, fontWeight: FontWeight.Semibold, letterSpacing: "-0.02em");
+              if (page!.Article.Summary != "") {
+                Text(page!.Article.Summary, fontSize: FontSize.Subhead, color: Colors.TextSecondary);
+              }
+              if (page!.Article.ShowUpdated && page!.Article.UpdatedAt != null) {
+                Text($"Updated {page!.Article.UpdatedAt.Value:d MMMM yyyy}", fontSize: FontSize.Caption, color: Colors.TextMuted);
+              }
+            }
+          }
+          KnowledgeArticleBody(page!.Article);
+          if (page!.Article.Nearby.Count > 0) {
+            Stack(gap: 3, label: $"More in {page!.Article.Section}") {
+              Text($"More in {page!.Article.Section}", fontSize: FontSize.Subhead, fontWeight: FontWeight.Semibold);
+              KnowledgeLinkList(page!.Article.Nearby);
+            }
+          }
+          KnowledgeAskSomebody(page!.Places);
+        }
+      }
+    }
+  }
+}
+
+/// An article's words — with a line saying so when it is for the team only or not in the reader's language, and set in
+/// its own language's direction (an English article in an Arabic page reads left to right).
+[Composable]
+public component KnowledgeArticleBody(KnowledgeArticleView view) {
+  render {
+    Stack(gap: 4, w: "100%") {
+      if (view.TeamOnly) {
+        Alert("Only the team reads this article — customers never see it, here or in a search.", tone: Tone.Warning);
+      }
+      if (view.InAnotherLanguage) {
+        Alert("This article is not in your language yet — here it is in the language it was written in.", tone: Tone.Default);
+      }
+      Box(flowDirection: view.RightToLeft ? FlowDirection.RightToLeft : FlowDirection.LeftToRight, w: "100%", maxW: "720px",
+          label: view.Title) {
+        Markdown(view.Body);
+      }
+    }
+  }
+}
+
+/// Search results, as the kit draws them.
+public component KnowledgeResultsPage(string query) : HelpCentreSearch {
+  KnowledgePage? page = null;
+  // What was asked — known from the address, so the box holds it before the results arrive.
+  live var asked = query.Replace("-", " ").Trim();
+  on mount { page = KnowledgeResultsNow(asked); }
+  render {
+    Stack(gap: 8, w: "100%", pb: 10) {
+      KnowledgeHero(page == null ? "" : page!.Places.Name,
+                    asked == "" ? "Search the help centre" : $"Results for “{asked}”", asked);
+      Stack(gap: 6, w: "100%", maxW: "880px", mx: "auto", px: 5) {
+        if (page == null) { KnowledgeLoading(); }
+        if (page != null && page!.Results.Query != "" && page!.Results.Hits.Count == 0) {
+          Stack(gap: 4) {
+            EmptyState($"Nothing matched “{page!.Results.Query}”",
+                       body: "Try fewer words, or other words for the same thing — or ask us, and a person answers.");
+            KnowledgeAskSomebody(page!.Places);
+          }
+        }
+        if (page != null && page!.Results.Hits.Count > 0) {
+          Stack(gap: 3, label: "Results") {
+            Text(page!.Results.Loosened ? "No article has every word — these have some of them."
+                                        : (page!.Results.Hits.Count == 1 ? "1 article" : $"{page!.Results.Hits.Count} articles"),
+                 fontSize: FontSize.Label, color: Colors.TextMuted);
+            KnowledgeHitList(page!.Results.Hits);
+          }
+          KnowledgeAskSomebody(page!.Places);
+        }
+      }
+    }
+  }
+}
+
+/// What a search found — each hit's title, where it sits, and a few words from it.
+[Composable]
+public component KnowledgeHitList(List<KnowledgeHit> hits, bool compact = false) {
+  render {
+    Stack(gap: 0, role: UiRole.List, rounded: Radius.Lg, border: Colors.Border, borderW: 1, bg: Colors.Surface, overflow: Overflow.Hidden) {
+      foreach (var h in hits) {
+        Box(role: UiRole.ListItem, borderBW: 1, border: Colors.Border) {
+          Link(href: h.Href, label: h.Title, color: Colors.OnSurface, textDecoration: TextDecoration.None) {
+            Stack(gap: 1, px: compact ? 3 : 4, py: compact ? 2 : 3) {
+              Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+                Text(h.Title, fontWeight: FontWeight.Medium, color: Colors.Primary.Strong);
+                if (h.InAnotherLanguage) { Badge(h.Language.ToUpper(), tone: Tone.Ghost); }
+                if (h.TeamOnly) { Badge("Team only", tone: Tone.Warning); }
+              }
+              if (!compact) { Text(h.Category + " › " + h.Section, fontSize: FontSize.Caption, color: Colors.TextMuted); }
+              if (h.Snippet != "") { Text(h.Snippet, fontSize: FontSize.Label, color: Colors.TextSecondary); }
+            }
+          }
+        }
+      }
+    }
+  }
+}

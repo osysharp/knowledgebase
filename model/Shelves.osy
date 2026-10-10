@@ -1,0 +1,110 @@
+namespace Osysharp.KnowledgeBase;
+
+// ── arranging the help centre: categories and sections ────────────────────────────────────────────────────────────────
+//
+// Whoever manages the knowledge base (`ManagesKnowledge`) arranges the shelves; the rules on the rows say so, so these
+// are conveniences over ordinary writes.
+
+/// A category, as the arranging page lists it.
+public class KnowledgeCategoryRow {
+  public Guid Id = Guid.Empty;
+  public string Name = "";
+  public string Slug = "";
+  public string Description = "";
+  public bool TeamOnly;
+}
+
+/// An address made from `text`, unused by any category (or, `forSection`, any section).
+string UniqueShelfSlug(string text, bool forSection) {
+  var made = UniqueKnowledgeSlug(text, Guid.Empty);
+  var candidate = made;
+  var n = 2;
+  while (forSection ? KnowledgeSection.Any(s => s.Slug == candidate) : KnowledgeCategory.Any(c => c.Slug == candidate)) {
+    candidate = made + "-" + n.ToString();
+    n = n + 1;
+  }
+  return candidate;
+}
+
+/// Add a category at the end of the front page.
+public Guid AddKnowledgeCategory(string name, string description = "", bool teamOnly = false) {
+  var n = name.Trim();
+  if (n == "") { throw new ValidationException("Give the category a name."); }
+  var last = KnowledgeCategory.OrderByDescending(c => c.Position).FirstOrDefault();
+  var c = new KnowledgeCategory { Name = n, Description = description.Trim(), Slug = UniqueShelfSlug(n, false),
+                                  Position = last == null ? 1 : last.Position + 1,
+                                  Audience = teamOnly ? KnowledgeAudience.Team : KnowledgeAudience.Everyone };
+  UnitOfWork.Commit();
+  return c.Id;
+}
+
+/// Add a section at the end of a category.
+public Guid AddKnowledgeSection(Guid category, string name, string description = "") {
+  var c = KnowledgeCategory.FirstOrDefault(x => x.Id == category);
+  if (c == null) { throw new ValidationException("That category is gone."); }
+  var n = name.Trim();
+  if (n == "") { throw new ValidationException("Give the section a name."); }
+  var last = KnowledgeSection.Where(s => s.Category.Id == category).OrderByDescending(s => s.Position).FirstOrDefault();
+  var s = new KnowledgeSection { Category = c, Name = n, Description = description.Trim(), Slug = UniqueShelfSlug(n, true),
+                                 Position = last == null ? 1 : last.Position + 1 };
+  UnitOfWork.Commit();
+  return s.Id;
+}
+
+/// Change a category's name, line and who reads it. Its address stays, so links to it keep working.
+public void EditKnowledgeCategory(Guid category, string name, string description, bool teamOnly) {
+  var c = KnowledgeCategory.FirstOrDefault(x => x.Id == category);
+  if (c == null) { throw new ValidationException("That category is gone."); }
+  if (name.Trim() == "") { throw new ValidationException("Give the category a name."); }
+  c.Name = name.Trim();
+  c.Description = description.Trim();
+  c.Audience = teamOnly ? KnowledgeAudience.Team : KnowledgeAudience.Everyone;
+  UnitOfWork.Commit();
+}
+
+/// Change a section's name and line.
+public void EditKnowledgeSection(Guid section, string name, string description) {
+  var s = KnowledgeSection.FirstOrDefault(x => x.Id == section);
+  if (s == null) { throw new ValidationException("That section is gone."); }
+  if (name.Trim() == "") { throw new ValidationException("Give the section a name."); }
+  s.Name = name.Trim();
+  s.Description = description.Trim();
+  UnitOfWork.Commit();
+}
+
+/// Move a category one place earlier (`earlier`) or later on the front page.
+[SuppressWarning("cost-unbounded-read")]   // the help centre's categories, to swap two neighbours
+public void MoveKnowledgeCategory(Guid category, bool earlier) {
+  var all = KnowledgeCategory.OrderBy(c => c.Position).ThenBy(c => c.Name).ToList();
+  var i = all.FindIndex(c => c.Id == category);
+  var j = earlier ? i - 1 : i + 1;
+  if (i < 0 || j < 0 || j >= all.Count) { return; }
+  var moved = all[i];
+  all.RemoveAt(i);
+  all.Insert(j, moved);
+  var p = 1;
+  foreach (var c in all) { c.Position = p; p = p + 1; }
+  UnitOfWork.Commit();
+}
+
+/// Delete a section with no articles in it.
+public void DeleteKnowledgeSection(Guid section) {
+  var s = KnowledgeSection.FirstOrDefault(x => x.Id == section);
+  if (s == null) { return; }
+  if (KnowledgeArticle.Any(a => a.Section.Id == section)) {
+    throw new ValidationException("Move its articles to another section first — a section with articles is not deleted.");
+  }
+  s.Delete();
+  UnitOfWork.Commit();
+}
+
+/// Delete a category with no sections in it.
+public void DeleteKnowledgeCategory(Guid category) {
+  var c = KnowledgeCategory.FirstOrDefault(x => x.Id == category);
+  if (c == null) { return; }
+  if (KnowledgeSection.Any(s => s.Category.Id == category)) {
+    throw new ValidationException("Delete or move its sections first.");
+  }
+  c.Delete();
+  UnitOfWork.Commit();
+}

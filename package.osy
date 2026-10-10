@@ -1,0 +1,52 @@
+// Osysharp.KnowledgeBase — a knowledge base and the public help centre it is read in: articles written in markdown, in
+// categories and sections, each with drafts, numbered versions, a review before anything is published, a per-language
+// version of every article (a reader gets theirs, or the original when there is none yet), articles only the team may
+// read, and a help centre with search, suggestions as a person types, and what a search engine reads.
+//
+// The kit never knows what the articles are ABOUT — a product's documentation, a support team's answers, a school's
+// handbook. The app says WHO does what, once:
+//     policy ReadsTeamKnowledge => IsStaff;      // reads the articles only the team may read
+//     policy WritesKnowledge => IsStaff;         // writes drafts and sends them for review
+//     policy ReviewsKnowledge => IsEditor;       // reviews, publishes and archives
+//     policy ManagesKnowledge => IsAdmin;        // the categories and sections, and the settings
+// and where the help centre is:
+//     app.Knowledge = new KnowledgeSetup { Name = "Lumen Docs", ContactPath = "/contact" };
+//
+// ⚑ WHAT A READER SEES IS A RULE, NOT A FILTER. A published version of an article whose audience is the reader's is
+//   readable; nothing else is — a draft, a version in review, an archived article, an article for the team only — and
+//   that holds for every read: the help centre, a search, a suggestion, an app's own query.
+//   SECURITY-INVARIANT(knowledge-team-articles-never-reach-a-customer).
+//
+// ⚑ NOTHING IS PUBLISHED WITHOUT A STEP SOMEBODY MAY TAKE. Moving a version — sent for review, published, sent back,
+//   archived — is a recorded step, made by a person the step's rule allows and applied after the commit by the kit's
+//   own run, which checks it again: a draft is never published by editing it, and while the settings ask for a review,
+//   nobody publishes their own words. SECURITY-INVARIANT(knowledge-published-only-by-a-reviewer-step).
+//
+// AI drafts, AI translation and anything else that writes for a person are add-ons on this core, not in it.
+package Osysharp.KnowledgeBase {
+  version "0.9.1";
+  minPlatform "0.9.0";
+  // A product capability: other kits meet it through a bridge that `completes` it, never by using it.
+  role        vertical;
+  summary     "a knowledge base and its public help centre — markdown articles in categories and sections, drafts, numbered versions, review before publishing (nobody publishes their own words while review is on), a version per language with the original as fallback, team-only articles that never reach a customer or a search, search and suggestions as a person types — in each version's own language, so an inflected word finds its other forms, and by meaning once the app has an embedder — structured data and a sitemap for search engines, and the desk to write, review and arrange it all.";
+  model "model/**/*.osy";
+  // The personal data its own fields hold (`[Classification(Personal.X)]`): who wrote or reviewed an article, and what a
+  // reviewer wrote back.
+  personal Identity;
+  personal Content;
+  use Osysharp.Identity@0;
+  // Applying a step — send for review, publish, send back, archive — is a workflow, after the commit.
+  use Osysharp.Workflow;
+  // An article's body is a markdown document, written in the markdown editor.
+  use Osysharp.Markdown@1;
+  use Osysharp.MarkdownEditor@1;
+  // Search and suggestions: full text over every published version, ranked by meaning too once the app has an embedder.
+  use Osysharp.Memory;
+  // …and in each version's own language: its words in their base forms, so an inflected query finds the other forms.
+  use Osysharp.Stemming@0;
+  // What a search engine reads on an article and a category: the article, and where it sits.
+  use Osysharp.Seo@0;
+  // The help centre and the desk — themed by the app.
+  use Osysharp.Ui;
+  tests "tests";
+}

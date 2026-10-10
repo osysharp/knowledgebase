@@ -1,0 +1,184 @@
+namespace Osysharp.KnowledgeBase;
+
+using Osysharp.Identity;
+using Osysharp.Markdown;
+
+// ── writing: articles, drafts, a language of their own ────────────────────────────────────────────────────────────────
+
+/// Start an article in `section`, with its first draft: written in `language` (the app's own language when empty), for
+/// `audience`, at the address `slug` (made from the title when empty, and kept unique). Answers the draft to write in.
+public KnowledgeRevision NewKnowledgeArticle(KnowledgeSection section, string title, string language = "",
+                                             KnowledgeAudience audience = KnowledgeAudience.Everyone, string slug = "") {
+  var heading = title.Trim();
+  if (heading == "") { throw new ValidationException("Give the article a title — readers find it by it."); }
+  if (heading.Length > 200) { throw new ValidationException("Keep the title under 200 characters."); }
+  var lang = KnowledgeLanguageOrSource(language);
+  var address = UniqueKnowledgeSlug(slug.Trim() == "" ? heading : slug, Guid.Empty);
+  var me = Session.CurrentUser;
+  var article = new KnowledgeArticle { Section = section, Slug = address, Audience = audience, Language = lang, Author = me,
+                                       Position = section.Articles.Count() };
+  var draft = new KnowledgeRevision { Article = article, Language = lang, Number = 1, Title = heading, Author = me };
+  UnitOfWork.Commit();
+  return draft;
+}
+
+/// The draft of `article` in `language` — the one being written (or in review), else a new one started from what its
+/// readers read now: that language's published version, or — a language the article is not in yet — the original's, to
+/// translate. Answers it; a version in review is answered as it is (take it back to change it).
+public KnowledgeRevision KnowledgeDraft(KnowledgeArticle article, string language = "") {
+  var lang = language.Trim() == "" ? article.Language : KnowledgeLanguageOrSource(language);
+  var articleId = article.Id;
+  var open = KnowledgeRevision.FirstOrDefault(r => r.Article.Id == articleId && r.Language == lang
+    && (r.Stage == KnowledgeStage.Draft || r.Stage == KnowledgeStage.InReview));
+  if (open != null) { return open; }
+  var from = KnowledgeRevision.FirstOrDefault(r => r.Article.Id == articleId && r.Language == lang && r.Stage == KnowledgeStage.Published)
+          ?? KnowledgeRevision.FirstOrDefault(r => r.Article.Id == articleId && r.Language == article.Language && r.Stage == KnowledgeStage.Published)
+          ?? KnowledgeRevision.Where(r => r.Article.Id == articleId).OrderByDescending(r => r.Number).FirstOrDefault();
+  var draft = new KnowledgeRevision { Article = article, Language = lang, Number = NextKnowledgeNumber(articleId, lang),
+                                      Title = from == null ? article.Slug : from.Title, Summary = from == null ? "" : from.Summary,
+                                      Body = from == null ? "" : BodyOf(from), From = from, Author = Session.CurrentUser };
+  UnitOfWork.Commit();
+  return draft;
+}
+
+/// Start a new draft from an earlier version — to put back what it said. Refused while a draft of that language is
+/// being written: finish or throw away that one first.
+public KnowledgeRevision KnowledgeDraftFrom(KnowledgeRevision earlier) {
+  var articleId = earlier.Article.Id;
+  var lang = earlier.Language;
+  if (KnowledgeRevision.Any(r => r.Article.Id == articleId && r.Language == lang
+        && (r.Stage == KnowledgeStage.Draft || r.Stage == KnowledgeStage.InReview))) {
+    throw new ValidationException("There is already a draft in this language — finish it or throw it away first.");
+  }
+  var draft = new KnowledgeRevision { Article = earlier.Article, Language = lang, Number = NextKnowledgeNumber(articleId, lang),
+                                      Title = earlier.Title, Summary = earlier.Summary, Body = BodyOf(earlier), From = earlier,
+                                      ChangeNote = $"Back to version {earlier.Number}", Author = Session.CurrentUser };
+  UnitOfWork.Commit();
+  return draft;
+}
+
+/// Throw away a draft that was never sent for review. An article with nothing else, and never published, goes with it.
+[SuppressWarning("cost-unbounded-read")]   // one never-published article's workflow steps, deleted with it
+public void DiscardKnowledgeDraft(KnowledgeRevision draft) {
+  if (draft.Stage != KnowledgeStage.Draft || draft.SubmittedAt != null) {
+    throw new ValidationException("Only a draft that was never sent for review can be thrown away.");
+  }
+  var article = draft.Article;
+  var articleId = article.Id;
+  var draftId = draft.Id;
+  var others = KnowledgeRevision.Count(r => r.Article.Id == articleId && r.Id != draftId);
+  draft.Delete();
+  if (others == 0 && article.FirstPublishedAt == null) {
+    foreach (var s in KnowledgeStep.Where(x => x.Article.Id == articleId).ToList()) { s.Delete(); }
+    article.Delete();
+  }
+  UnitOfWork.Commit();
+}
+
+/// The next version number of `article` in `language`.
+int NextKnowledgeNumber(Guid articleId, string language) {
+  var last = KnowledgeRevision.Where(r => r.Article.Id == articleId && r.Language == language).OrderByDescending(r => r.Number).FirstOrDefault();
+  return last == null ? 1 : last.Number + 1;
+}
+
+/// `language`, when the app speaks it; the app's own language when it is empty. Refused, naming the ones it speaks,
+/// otherwise.
+public string KnowledgeLanguageOrSource(string language) {
+  var wanted = language.Trim();
+  if (wanted == "") { return App.Languages[0]; }
+  foreach (var l in App.Languages) { if (l == wanted) { return l; } }
+  throw new ValidationException($"This app is not written in '{wanted}' — it speaks {string.Join(", ", App.Languages)}.");
+}
+
+/// An address made from `text` — lowercase letters, digits and dashes — unused by any other article than `except`.
+public string UniqueKnowledgeSlug(string text, Guid except) {
+  var cleaned = "";
+  var dash = false;
+  foreach (var c in text.Trim().ToLower()) {
+    if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) { cleaned = cleaned + c; dash = false; }
+    else if (!dash && cleaned != "") { cleaned = cleaned + "-"; dash = true; }
+  }
+  cleaned = cleaned.Trim('-');
+  if (cleaned.Length > 100) { cleaned = cleaned.Substring(0, 100).Trim('-'); }
+  if (cleaned == "") { cleaned = "article"; }
+  var candidate = cleaned;
+  var n = 2;
+  while (KnowledgeArticle.Any(a => a.Slug == candidate && a.Id != except)) {
+    candidate = cleaned + "-" + n.ToString();
+    n = n + 1;
+  }
+  return candidate;
+}
+
+// ── steps: send, take back, publish, send back, archive ───────────────────────────────────────────────────────────────
+
+/// Send a draft for review — with a note for the reviewer, if there is something to say.
+public KnowledgeStep SendKnowledgeForReview(KnowledgeRevision draft, string note = "") {
+  return TakeKnowledgeStep(draft.Article, draft, KnowledgeStepKind.Submit, note);
+}
+
+/// Take a version back out of review, to go on writing it.
+public KnowledgeStep TakeKnowledgeBack(KnowledgeRevision version) {
+  return TakeKnowledgeStep(version.Article, version, KnowledgeStepKind.TakeBack, "");
+}
+
+/// Publish a version — one in review (a reviewer, not its writer, while review is on), or a draft when review is off.
+[Action("Publish")]
+public KnowledgeStep PublishKnowledge(KnowledgeRevision version, string note = "") {
+  return TakeKnowledgeStep(version.Article, version, KnowledgeStepKind.Publish, note);
+}
+
+/// Send a version in review back to its writer, saying what to change.
+public KnowledgeStep SendKnowledgeBack(KnowledgeRevision version, string note) {
+  if (note.Trim() == "") { throw new ValidationException("Say what to change — the writer reads it."); }
+  return TakeKnowledgeStep(version.Article, version, KnowledgeStepKind.SendBack, note);
+}
+
+/// Archive an article: no reader reads it, and it is in no search. Its versions are kept; bring it back any time.
+[Action("Archive")]
+public KnowledgeStep ArchiveKnowledge(KnowledgeArticle article, string note = "") {
+  return TakeKnowledgeStep(article, null, KnowledgeStepKind.Archive, note);
+}
+
+/// Bring an archived article back — its published versions are read again.
+[Action("Bring back")]
+public KnowledgeStep RestoreKnowledge(KnowledgeArticle article) {
+  return TakeKnowledgeStep(article, null, KnowledgeStepKind.Restore, "");
+}
+
+/// A step, as the person signed in — refused here with the reason a person reads when it cannot be taken now, and
+/// checked again when it is applied.
+KnowledgeStep TakeKnowledgeStep(KnowledgeArticle article, KnowledgeRevision? version, KnowledgeStepKind kind, string note) {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new NotAuthorized("Sign in first."); }
+  var words = note.Trim();
+  if (words.Length > 2000) { throw new ValidationException("Keep the note under 2,000 characters."); }
+  if (version != null) {
+    var versionId = version.Id;
+    if (KnowledgeStep.Any(s => s.Revision != null && s.Revision.Id == versionId && s.State == KnowledgeStepState.Waiting)) {
+      throw new ValidationException("A step on this version is still being made — a moment.");
+    }
+    if (kind == KnowledgeStepKind.Submit && version.Stage != KnowledgeStage.Draft) {
+      throw new ValidationException("Only a draft can be sent for review.");
+    }
+    if (kind == KnowledgeStepKind.TakeBack && version.Stage != KnowledgeStage.InReview) {
+      throw new ValidationException("It is not in review.");
+    }
+    if (kind == KnowledgeStepKind.SendBack && version.Stage != KnowledgeStage.InReview) {
+      throw new ValidationException("Only a version in review can be sent back.");
+    }
+    if (kind == KnowledgeStepKind.Publish) {
+      var rules = KnowledgeRulesNow();
+      if (rules.RequireReview && version.Stage == KnowledgeStage.Draft) {
+        throw new ValidationException("Send it for review first — a reviewer publishes it.");
+      }
+      if (rules.RequireReview && version.Author != null && version.Author.Id == me.Id) {
+        throw new ValidationException("Somebody else reviews what you wrote.");
+      }
+    }
+  }
+  var step = new KnowledgeStep { Article = article, Revision = version, Kind = kind, Note = words == "" ? null : words,
+                                 By = me, At = DateTime.UtcNow };
+  UnitOfWork.Commit();
+  return step;
+}

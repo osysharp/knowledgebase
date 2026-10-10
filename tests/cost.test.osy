@@ -1,0 +1,38 @@
+// WHAT THE HELP CENTRE COSTS AS IT GROWS — the front page is the page every visitor opens, and it reads the same with
+// two categories as with six. The test asks once small and once grown, and a read per category turns it red with both
+// numbers. Lumen's documentation is in lumen.test.osy.
+using Osysharp.Identity;
+using Osysharp.KnowledgeBase;
+using KnowledgeKitTests;
+
+/// ⭐ THE FRONT PAGE COUNTS EVERY CATEGORY AT ONCE — how many articles each holds is one grouped read, not a count per
+/// category.
+[Test(Lumen)]
+void the_front_page_counts_every_category_at_once() {
+  Published("installing", "Install Lumen", "Download it, open it.");
+  Published("colour", "White balance", "Pick something grey.");
+  var small = 0;
+  var shown = 0;
+  runas (Pia) {
+    var mark = Cost.Mark();
+    shown = KnowledgeShelves().Count;
+    small = Cost.StatementsSince(mark);
+  }
+  for (var i = 1; i <= 4; i++) {
+    var section = "";
+    runas (Owen) {
+      var sid = AddKnowledgeSection(AddKnowledgeCategory("Topic " + i), "Basics " + i);
+      section = KnowledgeSection.Single(s => s.Id == sid).Slug;
+    }
+    Published(section, "Article " + i, "Words " + i + ".");
+  }
+  runas (Pia) {
+    var mark = Cost.Mark();
+    var shelves = KnowledgeShelves();
+    var grown = Cost.StatementsSince(mark);
+    Log.Information("KnowledgeShelves: " + small + " statements with " + shown + " categories, " + grown + " with " + shelves.Count);
+    Assert.Equal(shown + 4, shelves.Count);
+    Assert.Equal(1, shelves.Last().Count);
+    Assert.Equal(small, grown);
+  }
+}

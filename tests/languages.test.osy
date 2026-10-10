@@ -1,0 +1,65 @@
+// Languages: an article has a version per language, each written, reviewed and published on its own; a reader reads
+// theirs, and an article with no version in their language yet is shown in the original — saying so.
+using Osysharp.Identity;
+using Osysharp.KnowledgeBase;
+using KnowledgeKitTests;
+
+[Test(Lumen)]
+void a_reader_reads_their_language_and_falls_back_to_the_original() {
+  var slug = Published("colour", "White balance", "Pick a neutral grey with the dropper.", summary: "Fix a colour cast.");
+  Translated(slug, "sv", "Vitbalans", "Välj en neutral grå med pipetten.", summary: "Rätta till ett färgstick.");
+  // Swedish: the Swedish version.
+  Session.SetLanguage("sv");
+  var sv = KnowledgeArticleView(slug);
+  Assert.Equal("Vitbalans", sv.Title);
+  Assert.Equal("sv", sv.Language);
+  Assert.False(sv.InAnotherLanguage);
+  Assert.Equal(["en", "sv"], sv.Languages);
+  // Arabic: no Arabic version yet — the original, and the page says so.
+  Session.SetLanguage("ar");
+  var ar = KnowledgeArticleView(slug);
+  Assert.Equal("White balance", ar.Title);
+  Assert.Equal("en", ar.Language);
+  Assert.Equal("ar", ar.ReaderLanguage);
+  Assert.True(ar.InAnotherLanguage);
+}
+
+[Test(Lumen)]
+void a_language_version_is_drafted_from_the_original_and_published_on_its_own() {
+  var slug = Published("presets", "Make a preset", "Save the look as a preset.");
+  runas (Wren) {
+    var sv = KnowledgeDraft(KnowledgeArticle.Single(a => a.Slug == slug), "sv");
+    // Started from the original, to translate.
+    Assert.Equal("Make a preset", sv.Title);
+    Assert.Equal("Save the look as a preset.", BodyOf(sv));
+    Assert.Equal(1, sv.Number);
+    sv.Title = "Skapa en förinställning";
+    sv.Body = "Spara utseendet som en förinställning.";
+    UnitOfWork.Commit();
+    // A language the app does not speak is refused, naming the ones it does.
+    var ex = Assert.Throws<ValidationException>(() => KnowledgeDraft(KnowledgeArticle.Single(a => a.Slug == slug), "de"));
+    Assert.Equal("This app is not written in 'de' — it speaks en, ar, sv.", ex.Message);
+  }
+  // A Swedish draft is not published — a Swedish reader still reads the original.
+  Session.SetLanguage("sv");
+  Assert.Equal("Make a preset", KnowledgeArticleView(slug).Title);
+  Assert.True(KnowledgeArticleView(slug).InAnotherLanguage);
+  Assert.Equal(["en 1 Published", "sv 1 Draft"], StagesOf(slug));
+}
+
+[Test(Lumen)]
+void lists_and_searches_are_in_the_readers_language() {
+  var slug = Published("colour", "White balance", "Pick a neutral grey with the dropper.");
+  Translated(slug, "sv", "Vitbalans", "Välj en neutral grå med pipetten.");
+  Published("colour", "Saturation", "Drag the saturation slider.");
+  Session.SetLanguage("sv");
+  var shelf = KnowledgeShelf("editing-photos")!;
+  Assert.Equal(["Saturation", "Vitbalans"], shelf.Sections[0].Articles.Select(l => l.Title).OrderBy(t => t).ToList());
+  Assert.True(shelf.Sections[0].Articles.Single(l => l.Title == "Saturation").InAnotherLanguage);
+  // A search in English words finds the article, and shows it in Swedish.
+  var hit = SearchKnowledge("dropper").Hits.Single();
+  Assert.Equal("Vitbalans", hit.Title);
+  Assert.Equal("sv", hit.Language);
+  // …and a Swedish word finds it too.
+  Assert.Equal("Vitbalans", SearchKnowledge("pipetten").Hits.Single().Title);
+}
