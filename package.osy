@@ -24,7 +24,7 @@
 //
 // AI drafts, AI translation and anything else that writes for a person are add-ons on this core, not in it.
 package Osysharp.KnowledgeBase {
-  version "0.10.0";
+  version "1.0.0";
   minPlatform "0.14.0";
   // A product capability: other kits meet it through a bridge that `completes` it, never by using it.
   role        vertical;

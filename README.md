@@ -12,7 +12,7 @@ same knowledge base, and no reader ever finds it. The same kit runs a support de
 school's handbook: it never knows what the answers are about.
 
 ```osy
-use Osysharp.KnowledgeBase@0;
+use Osysharp.KnowledgeBase@1;
 
 policy ReadsTeamKnowledge => IsStaff;     // reads the articles only the team may read
 policy WritesKnowledge => IsStaff;        // writes drafts and sends them for review
