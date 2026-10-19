@@ -131,7 +131,8 @@ public KnowledgePublished? KnowledgeVersionFor(List<KnowledgePublished> publishe
 }
 
 /// Is `language` written right to left — Arabic, Hebrew, Persian, Urdu and their kin?
-public bool KnowledgeRightToLeft(string language) {
+public bool KnowledgeRightToLeft(string? language) {
+  if (language == null) { return false; }     // no version open yet: a page asks before it has one
   var primary = language.Contains("-") ? language.Substring(0, language.IndexOf("-")) : language;
   return primary == "ar" || primary == "he" || primary == "fa" || primary == "ur" || primary == "ps" || primary == "yi"
       || primary == "dv" || primary == "ckb" || primary == "sd" || primary == "ug";

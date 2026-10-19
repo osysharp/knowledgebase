@@ -24,8 +24,8 @@
 //
 // AI drafts, AI translation and anything else that writes for a person are add-ons on this core, not in it.
 package Osysharp.KnowledgeBase {
-  version "0.9.1";
-  minPlatform "0.9.0";
+  version "0.10.0";
+  minPlatform "0.14.0";
   // A product capability: other kits meet it through a bridge that `completes` it, never by using it.
   role        vertical;
   summary     "a knowledge base and its public help centre — markdown articles in categories and sections, drafts, numbered versions, review before publishing (nobody publishes their own words while review is on), a version per language with the original as fallback, team-only articles that never reach a customer or a search, search and suggestions as a person types — in each version's own language, so an inflected word finds its other forms, and by meaning once the app has an embedder — structured data and a sitemap for search engines, and the desk to write, review and arrange it all.";

@@ -74,8 +74,9 @@ public component KnowledgeDesk() {
       Id = r.Id, Article = r.Article.Id, Language = r.Language, Number = r.Number, Stage = r.Stage, Title = r.Title,
       Summary = r.Summary, ChangeNote = r.ChangeNote, Created = r.CreatedAt, SubmittedAt = r.SubmittedAt,
       PublishedAt = r.PublishedAt }).ToList();
+  // The shelves' sections — a help centre's few dozen, the first five hundred in their order.
   live var sections = KnowledgeSection.OrderBy(s => s.Category.Position).ThenBy(s => s.Category.Name).ThenBy(s => s.Position)
-    .Select(s => new KnowledgeSectionChoice { Id = s.Id, Label = s.Category.Name + " › " + s.Name,
+    .Take(500).Select(s => new KnowledgeSectionChoice { Id = s.Id, Label = s.Category.Name + " › " + s.Name,
                                               TeamOnly = s.Category.Audience == KnowledgeAudience.Team }).ToList();
   live var manages = ManagesKnowledge;
   on mount { desk = KnowledgeDeskPath(); }
@@ -483,8 +484,9 @@ public component KnowledgeNoVersionPane(KnowledgeArticleHead a, string language)
 /// Where the article sits and who reads it, its address, and archiving it.
 [Composable]
 public component KnowledgePlacePane(KnowledgeArticleHead a) {
+  // The shelves' sections — a help centre's few dozen, the first five hundred in their order.
   live var sections = KnowledgeSection.OrderBy(s => s.Category.Position).ThenBy(s => s.Category.Name).ThenBy(s => s.Position)
-    .Select(s => new KnowledgeSectionChoice { Id = s.Id, Label = s.Category.Name + " › " + s.Name,
+    .Take(500).Select(s => new KnowledgeSectionChoice { Id = s.Id, Label = s.Category.Name + " › " + s.Name,
                                               TeamOnly = s.Category.Audience == KnowledgeAudience.Team }).ToList();
   live var reviews = ReviewsKnowledge;
   KnowledgeSectionChoice? into = null;
@@ -600,8 +602,9 @@ public component KnowledgeHistoryPane(List<KnowledgeVersionHead> versions, List<
 /// Every version waiting for a reviewer, the longest-waiting first.
 [Composable]
 public component KnowledgeReviewQueue() {
+  // The two hundred that have waited longest; the next come up as these are reviewed.
   live var waiting = KnowledgeRevision.Where(r => r.Stage == KnowledgeStage.InReview).OrderBy(r => r.SubmittedAt)
-    .Select(r => new KnowledgeVersionHead {
+    .Take(200).Select(r => new KnowledgeVersionHead {
       Id = r.Id, Article = r.Article.Id, Language = r.Language, Number = r.Number, Stage = r.Stage, Title = r.Title,
       Summary = r.Summary, ChangeNote = r.ChangeNote, Author = r.Author == null ? Guid.Empty : r.Author.Id,
       AuthorName = r.Author == null ? "" : r.Author.DisplayName, Created = r.CreatedAt, SubmittedAt = r.SubmittedAt }).ToList();
@@ -650,9 +653,9 @@ public component KnowledgeReviewQueue() {
 /// renamed, reordered, and deleted when empty.
 [Composable]
 public component KnowledgeShelvesDesk() {
-  live var categories = KnowledgeCategory.OrderBy(c => c.Position).ThenBy(c => c.Name).Select(c => new KnowledgeCategoryRow {
+  live var categories = KnowledgeCategory.OrderBy(c => c.Position).ThenBy(c => c.Name).Take(100).Select(c => new KnowledgeCategoryRow {
       Id = c.Id, Name = c.Name, Slug = c.Slug, Description = c.Description, TeamOnly = c.Audience == KnowledgeAudience.Team }).ToList();
-  live var sections = KnowledgeSection.OrderBy(s => s.Position).ThenBy(s => s.Name).Select(s => new KnowledgeSectionLine {
+  live var sections = KnowledgeSection.OrderBy(s => s.Position).ThenBy(s => s.Name).Take(500).Select(s => new KnowledgeSectionLine {
       Id = s.Id, Category = s.Category.Id, Name = s.Name, Slug = s.Slug, Description = s.Description,
       Articles = s.Articles.Count() }).ToList();
   string desk = "";
