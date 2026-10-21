@@ -45,9 +45,10 @@ public entity KnowledgeCategory {
   [ForeignKey(Category)] KnowledgeSection[] Sections;
 
   security {
-    // Everyone reads a category for everyone, and the team every one — a rule per kind of caller, so the team never
-    // asks about a category's audience.
-    allow read where Audience == KnowledgeAudience.Everyone;
+    // Everyone — signed in or not — reads a category for everyone, and the team every one: a rule per kind of caller,
+    // so the team never asks about a category's audience. The `when` is what lets a signed-out visitor read the help
+    // centre at all: a `where` alone says which rows, not who (SECURITY-INVARIANT(a-grant-with-no-when-admits-no-signed-out-caller)).
+    allow read when IsAnonymous || IsAuthenticated where Audience == KnowledgeAudience.Everyone;
     allow read when ReadsTeamKnowledge || WritesKnowledge || ReviewsKnowledge || ManagesKnowledge;
     allow create, update, delete when ManagesKnowledge;
   }
@@ -63,7 +64,7 @@ public entity KnowledgeSection {
   [ForeignKey(Section)] KnowledgeArticle[] Articles;
 
   security {
-    allow read where Category.Audience == KnowledgeAudience.Everyone;
+    allow read when IsAnonymous || IsAuthenticated where Category.Audience == KnowledgeAudience.Everyone;
     allow read when ReadsTeamKnowledge || WritesKnowledge || ReviewsKnowledge || ManagesKnowledge;
     allow create, update, delete when ManagesKnowledge;
   }
@@ -98,7 +99,8 @@ public entity KnowledgeArticle {
   security {
     // A published, unarchived article whose audience (and its category's) is everyone's; for the team every published
     // one; for writers and reviewers every one. A rule per kind of caller.
-    allow read where FirstPublishedAt != null && ArchivedAt == null
+    allow read when IsAnonymous || IsAuthenticated
+      where FirstPublishedAt != null && ArchivedAt == null
                   && Audience == KnowledgeAudience.Everyone && Section.Category.Audience == KnowledgeAudience.Everyone;
     allow read when ReadsTeamKnowledge where FirstPublishedAt != null && ArchivedAt == null;
     allow read when WritesKnowledge || ReviewsKnowledge || ManagesKnowledge;
@@ -158,7 +160,8 @@ public entity KnowledgeRevision {
   security {
     // The published version of an article the reader may read (see KnowledgeArticle); every version for writers and
     // reviewers. A rule per kind of caller.
-    allow read where Stage == KnowledgeStage.Published && Article.ArchivedAt == null
+    allow read when IsAnonymous || IsAuthenticated
+      where Stage == KnowledgeStage.Published && Article.ArchivedAt == null
                   && Article.Audience == KnowledgeAudience.Everyone
                   && Article.Section.Category.Audience == KnowledgeAudience.Everyone;
     allow read when ReadsTeamKnowledge where Stage == KnowledgeStage.Published && Article.ArchivedAt == null;
