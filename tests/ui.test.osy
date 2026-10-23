@@ -344,6 +344,36 @@ void a_language_not_written_yet_starts_from_the_original() {
   Ui.Shot("desk-language-draft-wide-light");
 }
 
+/// Two languages, a draft open in each: the editor belongs to the TAB. Its fields are seeded from the version it was
+/// opened on, so before `KnowledgeDraftPane(…, key: open.Id)` switching tabs kept the first language's words in the
+/// fields — and Save wrote the Swedish title into the English draft.
+[Test(Lumen)]
+void each_languages_draft_opens_with_its_own_words() {
+  Stocked();
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Wren);
+  Ui.Visit("/knowledge");
+  Ui.Click("Install Lumen on a Mac");
+  Ui.Click("Edit — start version 2");
+  Ui.Click("SV · not written");
+  Ui.Click("Start the SV version");
+  Ui.Fill("Title", "Installera Lumen på en Mac");
+  Ui.Click("Save");
+  Background.Settle();
+  Ui.Click("EN · original · draft");
+  Ui.Fill("What changed", "Steps for macOS 15");
+  Ui.Click("Save");
+  Background.Settle();
+  runas (Wren) {
+    var article = KnowledgeRevision.Single(r => r.Language == "en" && r.Number == 1 && r.Title == "Install Lumen on a Mac").Article;
+    var en = KnowledgeRevision.Single(r => r.Article == article && r.Language == "en" && r.Number == 2);
+    var sv = KnowledgeRevision.Single(r => r.Article == article && r.Language == "sv");
+    Assert.Equal("Install Lumen on a Mac", en.Title);
+    Assert.Equal("Steps for macOS 15", en.ChangeNote);
+    Assert.Equal("Installera Lumen på en Mac", sv.Title);
+  }
+}
+
 [Test(Lumen)]
 void the_owner_arranges_categories_and_sections() {
   Stocked();

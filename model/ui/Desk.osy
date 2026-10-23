@@ -285,7 +285,8 @@ public component KnowledgeArticleDesk(Guid article, string language) {
         Box(display: Display.Grid, cols: Layout.AtLeast(Laptop) ? "minmax(0, 1fr) 320px" : "minmax(0, 1fr)", gap: 5, w: "100%") {
           Stack(gap: 4, minW: "0") {
             if (open != null) {
-              KnowledgeDraftPane(a, open!, live, open!.Author == meId, reviews, requireReview, steps);
+              // Keyed by the version: the pane's fields are seeded from it, and a language tab hands it another one.
+              KnowledgeDraftPane(a, open!, live, open!.Author == meId, reviews, requireReview, steps, key: open!.Id);
             } else {
               if (live != null) {
                 KnowledgeLivePane(a, live!, showing);
