@@ -73,3 +73,105 @@ secret; until it has one, search keeps working by words and says so.
 
 Every behaviour above is proven against a small documentation site, and its screens are photographed with
 `osy test --pixels`. Each promise about who reads what is checked to fail when its rule is taken out.
+
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+using Osysharp.Identity;
+using Osysharp.KnowledgeBase;
+using KnowledgeKitTests;
+
+[Test(Lumen)]
+void a_category_with_nothing_published_is_not_on_the_front_page() {
+  Published("installing", "Install Lumen on a Mac", "Drag it to Applications.");
+  runas (Pia) {
+    var shelves = KnowledgeShelves();
+    Assert.Equal(["getting-started"], shelves.Select(s => s.Slug).ToList());
+    Assert.Equal(1, shelves[0].Count);
+    // …and an empty section is not on its category's page either; nor is an empty category's page anything.
+    Assert.Equal(["installing"], KnowledgeShelf("getting-started")!.Sections.Select(s => s.Slug).ToList());
+    Assert.Null(KnowledgeShelf("editing-photos"));
+  }
+}
+```
+
+From [`tests/audience.test.osy`](tests/audience.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.KnowledgeBase;
+using KnowledgeKitTests;
+
+[Test(Lumen)]
+void the_front_page_counts_every_category_at_once() {
+  Published("installing", "Install Lumen", "Download it, open it.");
+  Published("colour", "White balance", "Pick something grey.");
+  var small = 0;
+  var shown = 0;
+  runas (Pia) {
+    var mark = Cost.Mark();
+    shown = KnowledgeShelves().Count;
+    small = Cost.StatementsSince(mark);
+  }
+  for (var i = 1; i <= 4; i++) {
+    var section = "";
+    runas (Owen) {
+      var sid = AddKnowledgeSection(AddKnowledgeCategory("Topic " + i), "Basics " + i);
+      section = KnowledgeSection.Single(s => s.Id == sid).Slug;
+    }
+    Published(section, "Article " + i, "Words " + i + ".");
+  }
+  runas (Pia) {
+    var mark = Cost.Mark();
+    var shelves = KnowledgeShelves();
+    var grown = Cost.StatementsSince(mark);
+    Log.Information("KnowledgeShelves: " + small + " statements with " + shown + " categories, " + grown + " with " + shelves.Count);
+    Assert.Equal(shown + 4, shelves.Count);
+    Assert.Equal(1, shelves.Last().Count);
+    Assert.Equal(small, grown);
+  }
+}
+```
+
+From [`tests/cost.test.osy`](tests/cost.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.KnowledgeBase;
+using KnowledgeKitTests;
+
+[Test(Lumen)]
+void a_reader_reads_their_language_and_falls_back_to_the_original() {
+  var slug = Published("colour", "White balance", "Pick a neutral grey with the dropper.", summary: "Fix a colour cast.");
+  Translated(slug, "sv", "Vitbalans", "Välj en neutral grå med pipetten.", summary: "Rätta till ett färgstick.");
+  // Swedish: the Swedish version.
+  Session.SetLanguage("sv");
+  var sv = KnowledgeArticleView(slug);
+  Assert.Equal("Vitbalans", sv.Title);
+  Assert.Equal("sv", sv.Language);
+  Assert.False(sv.InAnotherLanguage);
+  Assert.Equal(["en", "sv"], sv.Languages);
+  // Arabic: no Arabic version yet — the original, and the page says so.
+  Session.SetLanguage("ar");
+  var ar = KnowledgeArticleView(slug);
+  Assert.Equal("White balance", ar.Title);
+  Assert.Equal("en", ar.Language);
+  Assert.Equal("ar", ar.ReaderLanguage);
+  Assert.True(ar.InAnotherLanguage);
+}
+```
+
+From [`tests/languages.test.osy`](tests/languages.test.osy).
+
+## Learn more
+
+- [The Osysharp.KnowledgeBase reference](https://osysharp.com/reference/ui/knowledge-kit/)
+- [Osysharp.KnowledgeBase in the package catalogue](https://osysharp.com/packages/#osysharp-knowledgebase)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE).
