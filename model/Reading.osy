@@ -438,6 +438,11 @@ List<KnowledgeHit> KnowledgeHitsOf(List<KnowledgeMatched> found, List<string> wo
 public KnowledgeResults KnowledgeByMeaning(string query, bool includeTeam = false, int take = 5) {
   var results = new KnowledgeResults { Query = query.Trim() };
   if (results.Query == "") { return results; }
+  // With no embedder a memory search answers by words — this is the search by MEANING, so it says it is off instead.
+  if (!Memory.ByMeaning()) {
+    results.Unavailable = "Search by meaning is not set up — the app has no embedding key.";
+    return results;
+  }
   List<SearchHit> hits = [];
   try {
     hits = Memory.Search(results.Query, of: [KnowledgeRevision], limit: take * 4);
